@@ -2,6 +2,7 @@
 Run the breakout scanner from the command line.
 
   py scan.py                 scan watchlist.txt
+  py scan.py --universe      scan universe.txt (S&P 500 + 400 + Nasdaq-100, built weekly)
   py scan.py AAPL            one ticker, with full indicator detail
   py scan.py NVDA AMD        several tickers
   py scan.py --all           show every stock's score, not just 60+
@@ -58,12 +59,23 @@ def print_detail(sym, r):
 def main():
     ap = argparse.ArgumentParser(description="Breakout setup scanner (daily bars)")
     ap.add_argument("tickers", nargs="*", help="tickers to scan (default: watchlist.txt)")
+    ap.add_argument("--universe", action="store_true",
+                    help="scan universe.txt (built weekly by build_universe.py)")
     ap.add_argument("--all", action="store_true", help="show every score, not just 60+")
     ap.add_argument("--source", help="schwab or yahoo (overrides DATA_SOURCE)")
     ap.add_argument("--min-score", type=int, default=scanner.MIN_SCORE)
     args = ap.parse_args()
 
-    tickers = [t.upper() for t in args.tickers] or load_watchlist()
+    if args.universe:
+        uni = HERE / "universe.txt"
+        if not uni.exists():
+            sys.exit("universe.txt not found. Run: py build_universe.py")
+        age = (time.time() - uni.stat().st_mtime) / 86400
+        if age > 8:
+            print(f"WARNING: universe.txt is {age:.0f} days old. Run: py build_universe.py")
+        tickers = load_watchlist(uni)
+    else:
+        tickers = [t.upper() for t in args.tickers] or load_watchlist()
     try:
         src = get_source(args.source)
     except DataError as e:
@@ -85,7 +97,7 @@ def main():
             skipped.append((sym, reason))
             continue
         results.append({"symbol": sym, **scanner.score(df)})
-        if len(tickers) > 20 and i % 25 == 0:
+        if len(tickers) > 20 and i % 100 == 0:
             print(f"  {i}/{len(tickers)}...")
 
     if len(tickers) == 1 and results:

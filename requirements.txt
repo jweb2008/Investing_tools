@@ -4,3 +4,4 @@ numpy
 python-dotenv
 openpyxl
 yfinance
+lxml

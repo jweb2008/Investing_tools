@@ -35,3 +35,6 @@ fills_cache.csv
 update_log.txt
 Tracker Archive/
 *.zip
+
+# Generated weekly by build_universe.py
+universe.txt

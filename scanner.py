@@ -64,7 +64,8 @@ def indicators(df: pd.DataFrame) -> dict:
     tr_pct = tr / c * 100
     atr_recent = tr_pct.iloc[-ATR_RECENT:].mean()
     atr_prior = tr_pct.iloc[-(ATR_RECENT + ATR_PRIOR):-ATR_RECENT].mean()
-    atr14 = tr.iloc[-14:].mean()
+    # Wilder's smoothing, matching thinkorswim's ATR(14)
+    atr14 = tr.ewm(alpha=1 / 14, adjust=False).mean().iloc[-1]
 
     vol_short = v.iloc[-VOL_SHORT:].mean()
     vol_long = v.iloc[-VOL_LONG:].mean()
