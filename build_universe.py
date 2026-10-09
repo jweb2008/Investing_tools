@@ -7,7 +7,7 @@ Builds the scan universe from index membership. Run weekly.
 Universe: S&P 500 + S&P 400 (midcap) + Nasdaq-100, about 1,000 stocks.
 Membership comes from Wikipedia's index tables (free, updated as changes
 happen). Each stock is then checked against the scanner's filters (price $5+,
-500K+ average volume, 1 year of history) so the daily scan only pulls stocks
+$20M+ average dollar volume, optional price ceiling, 1 year of history) so the daily scan only pulls stocks
 that can actually qualify.
 
 Writes

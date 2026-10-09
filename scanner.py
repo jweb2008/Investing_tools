@@ -16,8 +16,11 @@ Separate flag
   breakout     close above the pivot on 1.5x+ the 50-day average volume
 
 Filters (stock is skipped, not scored)
-  price $5+, 50-day average volume 500K+, 1 year of history
+  price $5+ (and under SCAN_MAX_PRICE if set), 50-day average dollar volume
+  $20M+ (SCAN_MIN_DOLLAR_VOLUME), 1 year of history
 """
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -36,7 +39,10 @@ VOL_SHORT, VOL_LONG = 10, 50
 BREAKOUT_VOL_MULT = 1.5
 
 MIN_PRICE = 5.0
-MIN_AVG_VOLUME = 500_000
+# Dollar volume (price x shares) so liquid high-priced stocks are not penalized
+MIN_DOLLAR_VOLUME = float(os.getenv("SCAN_MIN_DOLLAR_VOLUME", "20000000"))
+# Optional price ceiling, e.g. SCAN_MAX_PRICE=500 in .env. Blank = no limit.
+MAX_PRICE = float(os.getenv("SCAN_MAX_PRICE") or "inf")
 MIN_BARS = 252             # 1 year of trading days
 
 
@@ -96,10 +102,14 @@ def check_filters(df: pd.DataFrame):
     """Returns None if the stock passes, otherwise the reason it was skipped."""
     if df is None or len(df) < MIN_BARS:
         return f"under 1 year of history ({0 if df is None else len(df)} bars)"
-    if df["close"].iloc[-1] < MIN_PRICE:
+    price = df["close"].iloc[-1]
+    if price < MIN_PRICE:
         return f"price under ${MIN_PRICE:.0f}"
-    if df["volume"].iloc[-VOL_LONG:].mean() < MIN_AVG_VOLUME:
-        return "average volume under 500K"
+    if price > MAX_PRICE:
+        return f"price over ${MAX_PRICE:.0f}"
+    dollar_vol = (df["close"] * df["volume"]).iloc[-VOL_LONG:].mean()
+    if dollar_vol < MIN_DOLLAR_VOLUME:
+        return f"average dollar volume under ${MIN_DOLLAR_VOLUME / 1e6:.0f}M"
     return None
 
 

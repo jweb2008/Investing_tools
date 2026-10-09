@@ -34,7 +34,8 @@ for chart review on thinkorswim. It is not a buy signal.
 ## Phase 2: Index universe
 
 - Universe: S&P 500 + S&P 400 + Nasdaq 100 (about 1,000 tickers).
-- Rebuilt weekly: apply price $5+, 500K+ average volume, 1 year of history,
+- Rebuilt weekly: apply price $5+, $20M+ average dollar volume, optional
+  price ceiling (SCAN_MAX_PRICE), 1 year of history,
   drop ETFs and funds.
 - Daily scan runs against the cleaned universe (roughly 9 to 10 minutes).
 - `watchlist.txt` stays available as a quick separate check.
