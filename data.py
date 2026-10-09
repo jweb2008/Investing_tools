@@ -67,8 +67,9 @@ class SchwabSource:
         for attempt in range(3):
             self._pace()
             try:
+                # Schwab writes class shares as BRK/B, not BRK.B
                 r = self.client.get_price_history_every_day(
-                    symbol, start_datetime=start, end_datetime=end,
+                    symbol.replace(".", "/"), start_datetime=start, end_datetime=end,
                     need_extended_hours_data=False)
             except Exception as e:
                 msg = str(e).lower()
