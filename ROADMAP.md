@@ -64,6 +64,21 @@ Built with the scorecard in mind from day one:
 - All levels go into the scan log so the scorecard can measure how often
   each was reached.
 
+## Phase 4b: Position sizing and sector grouping
+
+- Position sizing: fixed risk per trade (for example 1% of the account).
+  Stop distance converts to a suggested share count. Account size and risk
+  % live in `.env` or a config file, not in code.
+- Sector grouping: group the shortlist by sector and flag when several
+  setups are concentrated in one group (effectively one bet).
+
+## Phase 4c: Failure alerts
+
+- If the scan fails (expired token, Schwab outage, missing data, empty
+  universe), say so clearly instead of producing an empty or partial list.
+- Warn ahead of the Saturday token expiry if the token is close to lapsing.
+- Notification method TBD (local desktop notice now, Discord later).
+
 ## Phase 5: Earnings warning
 
 - Flag setups with earnings in the next 2 to 3 weeks.
@@ -72,6 +87,18 @@ Built with the scorecard in mind from day one:
 ## Phase 6: Relative strength ranking
 
 - Relative strength vs SPY over 3 to 6 months, used to sort setups.
+
+## Phase 6b: Backtesting
+
+- Replay the scanner over the last several years of daily bars and record
+  how each flagged setup played out (target hits, stop hits, return over
+  the holding window).
+- First read on whether higher scores and each component actually matter,
+  before the live scan log has enough history.
+- Avoid survivorship bias: today's index members did not all exist or
+  qualify in the past. Note this limitation in results if historical
+  membership is not available for free.
+- Results feed the same scorecard reports, labeled backtest vs live.
 
 ## Phase 7: Scorecard (separate component)
 
@@ -94,6 +121,7 @@ Grades results by joining the scan log to the Excel tracker.
   - Flagged setups taken vs passed
   - Holding period and R-multiples
   - Target hit rates by method
+- Wait for roughly 50+ trades per category before tuning weights.
 - Delivered as an Excel dashboard via Power Query or a small Python report.
 
 ## Later
