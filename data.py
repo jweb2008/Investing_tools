@@ -31,6 +31,21 @@ MIN_SECONDS_BETWEEN_CALLS = 60 / 100
 COLUMNS = ["open", "high", "low", "close", "volume"]
 
 
+def drop_incomplete_bar(df):
+    """Drop today's bar while the session is still open (before 4:15 PM ET).
+
+    A partial bar understates volume and gives an intraday close, which skews
+    the volume dry-up and breakout checks. Mid-session scans therefore use
+    the last completed day.
+    """
+    if df.empty:
+        return df
+    now = pd.Timestamp.now(tz="America/New_York")
+    if df.index[-1].date() == now.date() and now.time() < dt.time(16, 15):
+        return df.iloc[:-1]
+    return df
+
+
 class DataError(Exception):
     """A problem that should stop the whole scan (login expired, no token)."""
 
@@ -91,7 +106,7 @@ class SchwabSource:
                    .dt.tz_convert("America/New_York").dt.normalize().dt.tz_localize(None))
             df.index = idx
             df.index.name = "date"
-            return df[COLUMNS].astype(float).sort_index()
+            return drop_incomplete_bar(df[COLUMNS].astype(float).sort_index())
         raise RuntimeError("rate limited repeatedly")
 
 
@@ -112,7 +127,7 @@ class YahooSource:
         df = df.rename(columns=str.lower)
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
         df.index.name = "date"
-        return df[COLUMNS].astype(float).sort_index()
+        return drop_incomplete_bar(df[COLUMNS].astype(float).sort_index())
 
 
 def get_source(name=None):
