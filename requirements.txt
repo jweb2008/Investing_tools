@@ -1,0 +1,6 @@
+schwab-py
+pandas
+numpy
+python-dotenv
+openpyxl
+yfinance

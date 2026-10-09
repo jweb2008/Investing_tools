@@ -1,0 +1,12 @@
+# Quick-check watchlist for py scan.py (one ticker per line, # for comments).
+# Starter list only: replace with your own tickers.
+AAPL
+MSFT
+NVDA
+AMD
+AMZN
+META
+GOOGL
+AVGO
+TSLA
+NFLX
