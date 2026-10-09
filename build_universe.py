@@ -37,7 +37,7 @@ OUT_INFO = HERE / "universe_info.csv"
 INDEXES = {
     "SP500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
     "SP400": "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
-    "NDX": "https://en.wikipedia.org/wiki/Nasdaq-100",
+    "NDX": "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies",
 }
 SYMBOL_COLS = ("Symbol", "Ticker")
 SECTOR_COLS = ("GICS Sector", "ICB Industry")
