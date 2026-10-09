@@ -1,19 +1,24 @@
 """
 Breakout setup scoring. Daily bars only.
 
-Finds stocks coiling just under resistance in an uptrend. Each stock gets a
-0 to 100 score; setups at MIN_SCORE or higher are reported. This builds a
+Finds stocks coiling just under resistance in an uptrend. This builds a
 shortlist for chart review. It is not a buy signal.
 
-Score components
+Required (a stock missing either is not a setup)
   uptrend      25  close > 50 SMA > 200 SMA
   near_pivot   25  close within 5% below the pivot (prior 30-day high)
+
+Contraction checks (a setup needs MIN_CHECKS of these 3)
   bb_squeeze   20  Bollinger band width in the bottom 25% of the last 6 months
   atr_contract 15  10-day ATR% under 80% of the prior 40 days
   vol_dryup    15  10-day average volume below the 50-day average
 
+The 0 to 100 score is still the sum of all five, so qualifying setups score
+80 to 100 and the score ranks how tight the coil is.
+
 Separate flag
-  breakout     close above the pivot on 1.5x+ the 50-day average volume
+  breakout     in an uptrend, close above the pivot on 1.5x+ the 50-day
+               average volume
 
 Filters (stock is skipped, not scored)
   price $5+ (and under SCAN_MAX_PRICE if set), 50-day average dollar volume
@@ -24,7 +29,9 @@ import os
 import numpy as np
 import pandas as pd
 
-MIN_SCORE = 60
+REQUIRED = ("uptrend", "near_pivot")
+CONTRACTION = ("bb_squeeze", "atr_contract", "vol_dryup")
+MIN_CHECKS = 2            # contraction checks a setup must pass (1 to 3)
 
 WEIGHTS = {"uptrend": 25, "near_pivot": 25, "bb_squeeze": 20,
            "atr_contract": 15, "vol_dryup": 15}
@@ -123,7 +130,17 @@ def score(df: pd.DataFrame) -> dict:
         "atr_contract": ind["atr_ratio"] < ATR_RATIO,
         "vol_dryup": ind["vol_10"] < ind["vol_50"],
     }
+    passed = dict(pts)
     pts = {k: WEIGHTS[k] if ok else 0 for k, ok in pts.items()}
-    breakout = ind["close"] > ind["pivot"] and ind["today_vol_x"] >= BREAKOUT_VOL_MULT
+    checks = sum(passed[k] for k in CONTRACTION)
+    breakout = (passed["uptrend"] and ind["close"] > ind["pivot"]
+                and ind["today_vol_x"] >= BREAKOUT_VOL_MULT)
     return {**ind, **{f"pts_{k}": p for k, p in pts.items()},
-            "score": sum(pts.values()), "breakout": bool(breakout)}
+            "score": sum(pts.values()),
+            "required_ok": all(passed[k] for k in REQUIRED),
+            "checks": int(checks),
+            "breakout": bool(breakout)}
+
+
+def is_setup(result: dict, min_checks: int = MIN_CHECKS) -> bool:
+    return result["required_ok"] and result["checks"] >= min_checks

@@ -50,8 +50,16 @@ def print_detail(sym, r):
     print("  Score")
     for k, w in scanner.WEIGHTS.items():
         p = r[f"pts_{k}"]
-        print(f"    {'+' if p else '-'} {k:<13} {p:>3} / {w}")
+        tag = "(required)" if k in scanner.REQUIRED else ""
+        print(f"    {'+' if p else '-'} {k:<13} {p:>3} / {w}  {tag}")
     print(f"    TOTAL         {r['score']:>3} / 100")
+    if scanner.is_setup(r):
+        print(f"  SETUP: uptrend and near pivot, {r['checks']} of 3 contraction checks")
+    elif not r["required_ok"]:
+        print("  Not a setup: missing a required check")
+    else:
+        print(f"  Not a setup: only {r['checks']} of 3 contraction checks "
+              f"(needs {scanner.MIN_CHECKS})")
     if r["breakout"]:
         print("  ** BREAKOUT: closed above pivot on 1.5x+ volume **")
 
@@ -61,9 +69,10 @@ def main():
     ap.add_argument("tickers", nargs="*", help="tickers to scan (default: watchlist.txt)")
     ap.add_argument("--universe", action="store_true",
                     help="scan universe.txt (built weekly by build_universe.py)")
-    ap.add_argument("--all", action="store_true", help="show every score, not just 60+")
+    ap.add_argument("--all", action="store_true", help="show every stock scored, not just setups")
     ap.add_argument("--source", help="schwab or yahoo (overrides DATA_SOURCE)")
-    ap.add_argument("--min-score", type=int, default=scanner.MIN_SCORE)
+    ap.add_argument("--min-checks", type=int, default=scanner.MIN_CHECKS, choices=[1, 2, 3],
+                    help="contraction checks a setup needs (default 2)")
     args = ap.parse_args()
 
     if args.universe:
@@ -103,21 +112,25 @@ def main():
     if len(tickers) == 1 and results:
         print_detail(tickers[0], results[0])
     elif results:
-        df = pd.DataFrame(results).sort_values("score", ascending=False)
-        shown = df if args.all else df[df["score"] >= args.min_score]
-        cols = {"symbol": "Symbol", "score": "Score", "close": "Close", "pivot": "Pivot",
+        df = pd.DataFrame(results).sort_values(["score", "pct_below_pivot"], ascending=[False, True])
+        df["setup"] = [scanner.is_setup(r, args.min_checks) for r in df.to_dict("records")]
+        shown = df if args.all else df[df["setup"]]
+        cols = {"symbol": "Symbol", "score": "Score", "checks": "Checks", "close": "Close",
+                "pivot": "Pivot",
                 "pct_below_pivot": "% Below", "bb_width_pctile": "BB %ile",
                 "atr_ratio": "ATR ratio", "breakout": "Breakout"}
         if len(shown):
-            title = "All scores" if args.all else f"Setups scoring {args.min_score}+"
+            title = ("All scores" if args.all else
+                     f"{len(shown)} setups (uptrend, within 5% of pivot, "
+                     f"{args.min_checks}+ of 3 contraction checks)")
             print(f"\n{title}:")
             print(shown[list(cols)].rename(columns=cols).to_string(
                 index=False, float_format=lambda x: f"{x:.2f}"))
         else:
-            print(f"\nNo setups scored {args.min_score}+.")
+            print("\nNo setups today.")
         brk = df[df["breakout"]]
         if len(brk):
-            print("\nBreakouts today (close above pivot on 1.5x+ volume): "
+            print("\nBreakouts (uptrend, close above pivot on 1.5x+ volume): "
                   + ", ".join(brk["symbol"]))
 
     for sym, reason in skipped:

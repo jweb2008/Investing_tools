@@ -41,6 +41,9 @@ INDEXES = {
 }
 SYMBOL_COLS = ("Symbol", "Ticker")
 SECTOR_COLS = ("GICS Sector", "ICB Industry")
+# keep -> drop, for companies listed under two share classes
+DUAL_CLASS = {"GOOGL": "GOOG", "FOXA": "FOX", "NWSA": "NWS", "UHAL": "UHAL.B",
+              "LEN": "LEN.B", "HEI": "HEI.A", "BF.B": "BF.A"}
 
 
 PAGES_DIR = HERE / "universe_pages"   # last downloaded copy of each page, for troubleshooting
@@ -124,6 +127,9 @@ def build_member_list():
     out = (allm.sort_values("_pref").drop_duplicates("symbol")
            .drop(columns=["_pref", "index"]).set_index("symbol"))
     out["indexes"] = indexes
+    # same company, two share classes: keep one so a setup isn't listed twice
+    dupes = [b for a, b in DUAL_CLASS.items() if a in out.index and b in out.index]
+    out = out.drop(index=dupes)
     return out.sort_index().reset_index(), len(frames) == len(INDEXES)
 
 
