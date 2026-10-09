@@ -1,0 +1,30 @@
+# Secrets and Schwab auth: never commit
+.env
+schwab_token.json
+*token*.json
+
+# Excel tracker, scan log, and backups
+*.xlsx
+*.xlsm
+*.xls
+~$*
+backups/
+*.bak
+
+# Logs and generated output
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
