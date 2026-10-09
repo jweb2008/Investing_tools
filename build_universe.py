@@ -19,6 +19,7 @@ Read-only. Pulls index lists and daily price history only.
 import argparse
 import datetime as dt
 import io
+import re
 import sys
 import time
 import urllib.request
@@ -45,22 +46,32 @@ SECTOR_COLS = ("GICS Sector", "ICB Industry")
 def fetch_members(name, url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (investing_tools scanner)"})
     html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8")
+    found = []
     for t in pd.read_html(io.StringIO(html)):
-        sym_col = next((c for c in SYMBOL_COLS if c in t.columns), None)
-        sec_col = next((c for c in SECTOR_COLS if c in t.columns), None)
-        # the constituents table is the one with a symbol column, a sector
-        # column, and a realistic number of rows
-        if sym_col and sec_col and len(t) >= 90:
-            out = pd.DataFrame({
-                "symbol": t[sym_col].astype(str).str.strip().str.upper(),
-                "sector": t[sec_col].astype(str).str.strip(),
-                "index": name,
-            })
-            out = out[out["symbol"].str.fullmatch(r"[A-Z]{1,5}(\.[A-Z])?")]
-            if len(out) < 90:
-                raise RuntimeError(f"only {len(out)} valid symbols found; the page layout may have changed")
-            return out
-    raise RuntimeError(f"could not find the members table for {name}")
+        # flatten two-row headers and drop footnote marks like "ICB Industry[14]"
+        if isinstance(t.columns, pd.MultiIndex):
+            t.columns = [c[-1] for c in t.columns]
+        t.columns = [re.sub(r"\[.*?\]", "", str(c)).strip() for c in t.columns]
+        sym_col = next((c for c in t.columns if c.split(" ")[0] in SYMBOL_COLS), None)
+        if not sym_col:
+            continue
+        sec_col = next((c for c in t.columns
+                        if any(c.startswith(s) for s in SECTOR_COLS + ("GICS", "ICB", "Sector", "Industry"))),
+                       None)
+        out = pd.DataFrame({
+            "symbol": t[sym_col].astype(str).str.strip().str.upper(),
+            "sector": t[sec_col].astype(str).str.strip() if sec_col else "Unknown",
+            "index": name,
+        })
+        out = out[out["symbol"].str.fullmatch(r"[A-Z]{1,5}(\.[A-Z])?")]
+        found.append((sec_col is not None, len(out), out))
+    # the constituents table: a realistic number of valid symbols, preferring
+    # one that also has a sector column
+    good = [f for f in found if f[1] >= 90]
+    if not good:
+        sizes = ", ".join(str(f[1]) for f in found) or "none"
+        raise RuntimeError(f"no members table found (symbol tables with sizes: {sizes})")
+    return max(good, key=lambda f: (f[0], f[1]))[2]
 
 
 def build_member_list():
