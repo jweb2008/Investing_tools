@@ -43,35 +43,67 @@ SYMBOL_COLS = ("Symbol", "Ticker")
 SECTOR_COLS = ("GICS Sector", "ICB Industry")
 
 
-def fetch_members(name, url):
+PAGES_DIR = HERE / "universe_pages"   # last downloaded copy of each page, for troubleshooting
+SYMBOL_RE = r"[A-Z]{1,5}(\.[A-Z])?"
+
+
+def download(name, url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (investing_tools scanner)"})
     html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8")
+    try:
+        PAGES_DIR.mkdir(exist_ok=True)
+        (PAGES_DIR / f"{name}.html").write_text(html, encoding="utf-8")
+    except OSError:
+        pass
+    return html
+
+
+def _label(col):
+    """Clean header text: last real level of a multi-row header, no footnotes."""
+    parts = col if isinstance(col, tuple) else (col,)
+    parts = [str(p) for p in parts if not str(p).startswith("Unnamed")]
+    text = parts[-1] if parts else ""
+    return re.sub(r"\[.*?\]", "", text).strip()
+
+
+def parse_members(name, html):
     found = []
     for t in pd.read_html(io.StringIO(html)):
-        # flatten two-row headers and drop footnote marks like "ICB Industry[14]"
-        if isinstance(t.columns, pd.MultiIndex):
-            t.columns = [c[-1] for c in t.columns]
-        t.columns = [re.sub(r"\[.*?\]", "", str(c)).strip() for c in t.columns]
-        sym_col = next((c for c in t.columns if c.split(" ")[0] in SYMBOL_COLS), None)
-        if not sym_col:
+        labels = [_label(c) for c in t.columns]
+        # columns are read by position, so duplicate header names
+        # (e.g. "Added Symbol" and "Removed Symbol" both flattening to
+        # "Symbol" in a changes table) can't break anything
+        sym_i = [i for i, lab in enumerate(labels) if lab.split(" ")[0] in SYMBOL_COLS]
+        if not sym_i:
+            # some tables put the ticker in an unlabeled column; take any
+            # column that is mostly ticker-shaped
+            for i in range(t.shape[1]):
+                col = t.iloc[:, i].astype(str).str.strip()
+                if len(col) >= 90 and col.str.fullmatch(SYMBOL_RE).mean() > 0.9:
+                    sym_i = [i]
+                    break
+        if not sym_i:
             continue
-        sec_col = next((c for c in t.columns
-                        if any(c.startswith(s) for s in SECTOR_COLS + ("GICS", "ICB", "Sector", "Industry"))),
-                       None)
+        sec_i = [i for i, lab in enumerate(labels)
+                 if lab.startswith(("GICS Sector", "ICB Industry", "Sector", "Industry"))]
         out = pd.DataFrame({
-            "symbol": t[sym_col].astype(str).str.strip().str.upper(),
-            "sector": t[sec_col].astype(str).str.strip() if sec_col else "Unknown",
+            "symbol": t.iloc[:, sym_i[0]].astype(str).str.strip().str.upper().values,
+            "sector": (t.iloc[:, sec_i[0]].astype(str).str.strip().values if sec_i else "Unknown"),
             "index": name,
         })
-        out = out[out["symbol"].str.fullmatch(r"[A-Z]{1,5}(\.[A-Z])?")]
-        found.append((sec_col is not None, len(out), out))
-    # the constituents table: a realistic number of valid symbols, preferring
-    # one that also has a sector column
+        out = out[out["symbol"].str.fullmatch(SYMBOL_RE)]
+        found.append((bool(sec_i), len(out), out))
+    # the members table: a realistic number of valid symbols, preferring one
+    # that also has a sector column
     good = [f for f in found if f[1] >= 90]
     if not good:
         sizes = ", ".join(str(f[1]) for f in found) or "none"
         raise RuntimeError(f"no members table found (symbol tables with sizes: {sizes})")
     return max(good, key=lambda f: (f[0], f[1]))[2]
+
+
+def fetch_members(name, url):
+    return parse_members(name, download(name, url))
 
 
 def build_member_list():
@@ -99,11 +131,21 @@ def main():
     ap = argparse.ArgumentParser(description="Build the weekly scan universe")
     ap.add_argument("--no-filter", action="store_true", help="skip the price/volume/history check")
     ap.add_argument("--source", help="schwab or yahoo (overrides DATA_SOURCE)")
+    ap.add_argument("--members-only", action="store_true",
+                    help="download and check the index lists only; change nothing")
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="save the universe even if an index list failed")
     args = ap.parse_args()
 
     print("Downloading index members...")
     members, complete = build_member_list()
     print(f"{len(members)} unique stocks")
+    if args.members_only:
+        print(f"Pages saved to {PAGES_DIR.name}\\. Nothing else was changed.")
+        return
+    if not complete and not args.allow_partial:
+        sys.exit("BUILD FAILED: an index list failed to download, so universe.txt was left "
+                 "unchanged. (Use --allow-partial to save it anyway.)")
 
     members["status"] = "ok"
     if not args.no_filter:
