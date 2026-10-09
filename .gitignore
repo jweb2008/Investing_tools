@@ -28,3 +28,10 @@ desktop.ini
 .DS_Store
 .vscode/
 .idea/
+
+# Trade data and run output
+fills_cache.csv
+*.csv
+update_log.txt
+Tracker Archive/
+*.zip
