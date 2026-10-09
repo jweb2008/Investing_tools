@@ -2,7 +2,7 @@
 Scan log: every setup, near-miss and breakout the scanner finds, one row per
 stock per day, for the scorecard to grade against your trade tracker later.
 
-  scan_log.csv        master record (the source of truth, append-only)
+  data\scan_log.csv   master record (the source of truth, append-only)
   scanner_log.xlsx    rebuilt from the CSV each run, as Excel table "ScanLog"
                       for Power Query
 
@@ -23,9 +23,9 @@ from pathlib import Path
 import pandas as pd
 
 HERE = Path(__file__).parent
-CSV_PATH = HERE / "scan_log.csv"
+CSV_PATH = HERE / "data" / "scan_log.csv"
 XLSX_PATH = HERE / "scanner_log.xlsx"
-UNIVERSE_INFO = HERE / "universe_info.csv"
+UNIVERSE_INFO = HERE / "data" / "universe_info.csv"
 
 COLUMNS = [
     "ScanDate", "Symbol", "Status", "Score", "Checks",
@@ -139,6 +139,7 @@ def append(new: pd.DataFrame):
               .drop_duplicates(["ScanDate", "Symbol"], keep="last")
               .sort_values(["ScanDate", "Score", "Symbol"], ascending=[False, False, True])
               .reset_index(drop=True))
+    CSV_PATH.parent.mkdir(exist_ok=True)
     merged.to_csv(CSV_PATH, index=False)
     counts = new["Status"].value_counts()
     summary = (f"Scan log: {len(new)} rows for {new['ScanDate'].iloc[0]} "

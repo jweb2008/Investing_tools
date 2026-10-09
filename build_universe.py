@@ -11,8 +11,8 @@ $20M+ average dollar volume, optional price ceiling, 1 year of history) so the d
 that can actually qualify.
 
 Writes
-  universe.txt       symbols that passed, one per line (what py scan.py --universe reads)
-  universe_info.csv  every member with sector, index, and pass/skip reason
+  data\universe.txt       symbols that passed, one per line (what py scan.py --universe reads)
+  data\universe_info.csv  every member with sector, index, and pass/skip reason
 
 Read-only. Pulls index lists and daily price history only.
 """
@@ -31,8 +31,9 @@ import scanner
 from data import DataError, get_source
 
 HERE = Path(__file__).parent
-OUT_TXT = HERE / "universe.txt"
-OUT_INFO = HERE / "universe_info.csv"
+DATA_DIR = HERE / "data"
+OUT_TXT = DATA_DIR / "universe.txt"
+OUT_INFO = DATA_DIR / "universe_info.csv"
 
 INDEXES = {
     "SP500": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
@@ -46,7 +47,7 @@ DUAL_CLASS = {"GOOGL": "GOOG", "FOXA": "FOX", "NWSA": "NWS", "UHAL": "UHAL.B",
               "LEN": "LEN.B", "HEI": "HEI.A", "BF.B": "BF.A"}
 
 
-PAGES_DIR = HERE / "universe_pages"   # last downloaded copy of each page, for troubleshooting
+PAGES_DIR = DATA_DIR / "universe_pages"   # last downloaded copy of each page, for troubleshooting
 SYMBOL_RE = r"[A-Z]{1,5}(\.[A-Z])?"
 
 
@@ -54,7 +55,7 @@ def download(name, url):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (investing_tools scanner)"})
     html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8")
     try:
-        PAGES_DIR.mkdir(exist_ok=True)
+        PAGES_DIR.mkdir(parents=True, exist_ok=True)
         (PAGES_DIR / f"{name}.html").write_text(html, encoding="utf-8")
     except OSError:
         pass
@@ -178,6 +179,7 @@ def main():
         sys.exit(f"BUILD FAILED: only {len(ok)} of {len(members)} passed, which looks like a data "
                  "problem rather than real filtering. universe.txt was left unchanged.")
 
+    DATA_DIR.mkdir(exist_ok=True)
     members["built"] = dt.date.today().isoformat()
     members.to_csv(OUT_INFO, index=False)
     OUT_TXT.write_text(f"# built {dt.date.today()} from {', '.join(INDEXES)}; {len(ok)} stocks\n"

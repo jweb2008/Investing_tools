@@ -100,7 +100,7 @@ def main():
     args = ap.parse_args()
 
     if args.universe:
-        uni = HERE / "universe.txt"
+        uni = HERE / "data" / "universe.txt"
         if not uni.exists():
             sys.exit("universe.txt not found. Run: py build_universe.py")
         age = (time.time() - uni.stat().st_mtime) / 86400
