@@ -40,7 +40,11 @@ for chart review on thinkorswim. It is not a buy signal.
 - Daily scan runs against the cleaned universe (roughly 9 to 10 minutes).
 - `watchlist.txt` stays available as a quick separate check.
 
-## Phase 3: Scan log and market filter
+## Phase 3: Scan log and market filter (built)
+
+scan_log.csv is the master record; scanner_log.xlsx (table "ScanLog") is
+rebuilt from it each run. Logs setups, near misses (uptrend + near pivot with
+too few contraction checks), and breakouts. Refine if near misses add noise.
 
 `scanner_log.xlsx` (or CSV), read by the Excel tracker through Power Query.
 Built with the scorecard in mind from day one:

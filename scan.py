@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import scan_log
 import scanner
 from data import DataError, get_source, source_name
 
@@ -64,6 +65,28 @@ def print_detail(sym, r):
         print("  ** BREAKOUT: closed above pivot on 1.5x+ volume **")
 
 
+def market_check(src):
+    """SPY and QQQ: True if the last close is above the 50-day SMA, None if unavailable."""
+    out = {}
+    for sym in ("SPY", "QQQ"):
+        try:
+            c = src.history(sym)["close"]
+            out[sym] = bool(c.iloc[-1] > c.rolling(50).mean().iloc[-1]) if len(c) >= 50 else None
+        except DataError:
+            raise
+        except Exception:
+            out[sym] = None
+    return out
+
+
+def describe_market(m):
+    word = {True: "above", False: "BELOW", None: "unavailable vs"}
+    line = f"Market: SPY {word[m.get('SPY')]} 50-day, QQQ {word[m.get('QQQ')]} 50-day"
+    if False in m.values():
+        line += "  (caution: breakouts fail more often in a weak market)"
+    return line
+
+
 def main():
     ap = argparse.ArgumentParser(description="Breakout setup scanner (daily bars)")
     ap.add_argument("tickers", nargs="*", help="tickers to scan (default: watchlist.txt)")
@@ -73,6 +96,7 @@ def main():
     ap.add_argument("--source", help="schwab or yahoo (overrides DATA_SOURCE)")
     ap.add_argument("--min-checks", type=int, default=scanner.MIN_CHECKS, choices=[1, 2, 3],
                     help="contraction checks a setup needs (default 2)")
+    ap.add_argument("--no-log", action="store_true", help="don't write to the scan log")
     args = ap.parse_args()
 
     if args.universe:
@@ -83,12 +107,22 @@ def main():
         if age > 8:
             print(f"WARNING: universe.txt is {age:.0f} days old. Run: py build_universe.py")
         tickers = load_watchlist(uni)
+        list_name = "universe"
     else:
+        list_name = "custom" if args.tickers else "watchlist"
         tickers = [t.upper() for t in args.tickers] or load_watchlist()
     try:
         src = get_source(args.source)
     except DataError as e:
         sys.exit(f"SCAN FAILED: {e}")
+
+    market = {}
+    if len(tickers) > 1:
+        try:
+            market = market_check(src)
+        except DataError as e:
+            sys.exit(f"SCAN FAILED: {e}")
+        print(describe_market(market))
 
     print(f"Scanning {len(tickers)} ticker(s) with {src.name} data...")
     started = time.time()
@@ -128,6 +162,10 @@ def main():
                 index=False, float_format=lambda x: f"{x:.2f}"))
         else:
             print("\nNo setups today.")
+        near = df[df["required_ok"] & ~df["setup"]]
+        if len(near) and not args.all:
+            print(f"\n{len(near)} near misses (uptrend and near pivot, fewer checks) "
+                  "are in the scan log, not shown here.")
         brk = df[df["breakout"]]
         if len(brk):
             print("\nBreakouts (uptrend, close above pivot on 1.5x+ volume): "
@@ -142,6 +180,17 @@ def main():
           f"in {time.time() - started:.0f}s")
     if tickers and not results and errors and len(errors) == len(tickers):
         sys.exit("SCAN FAILED: every ticker errored. Check your connection or Schwab status.")
+
+    # Log list scans (universe or watchlist), not one-off ticker checks
+    if results and list_name != "custom" and not args.no_log:
+        if len(errors) > 0.2 * len(tickers):
+            print("Scan log NOT updated: too many errors for a complete day's record.")
+        else:
+            try:
+                rows = scan_log.build_rows(results, market, args.min_checks, list_name, src.name)
+                print(scan_log.append(rows))
+            except Exception as e:
+                print(f"Scan log NOT updated: {e}")
 
 
 if __name__ == "__main__":
