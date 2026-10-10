@@ -116,7 +116,16 @@ trades stay available for account filters.
 - Recorded on each matched trade: days after the matched flag, days since the
   episode's first flag, and the flag's score, checks, raw values, market
   filter, and risk levels.
-- Unmatched trades are Discretionary.
+- Unmatched trades are Discretionary. Trades entered before the scan log
+  could have flagged them are labeled "Before scan log", so the scanner vs
+  discretionary comparison only uses the period the scanner existed.
+- Stock trades also get Entry type (average entry price at or below the
+  flag's Pivot = Pre-breakout) and R = recorded net % / (entry - scanner
+  Stop) as a % of entry. Options get these from the underlying in step 4.
+- Trades flagged 6 to 10 trading days before entry are listed on the Review
+  sheet as "just outside the match window", to help tune the window.
+- Flags table: one row per episode. Taken, Passed, or Window open (still
+  within 5 trading days of the last flag, inclusive).
 
 The Review sheet shows the actual spread of entry lags. Once enough trades
 exist, that tells us whether 5 days is right.
@@ -225,6 +234,12 @@ be Discretionary until scanner trades exist).
 - 2026-10-10 Step 1 built (`aar.py`): trades, styles, decisions, outcomes,
   Review sheet. Tested on tracker 10.9.11: 299 rows, 200 trades, 139 closed
   decisions; trade Net Profit ties to tracker rows to the cent.
+- 2026-10-10 Step 2 built: scanner matching, setup episodes, Flags table,
+  scanner report sections on Summary. Real data: all 198 dated trades
+  predate the scan log (10/9), 114 flags in their open window. Matching
+  verified with synthetic trades around real flags (window edges, same-day
+  exclusion, options on the underlying, multi-flag episodes, Thanksgiving,
+  pre/post-breakout, R).
 
 ## Resolved after review (2026-10-10)
 

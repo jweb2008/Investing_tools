@@ -20,15 +20,29 @@ Build step 1 (this version)
   - Outcome: Win / Scratch / Loss with a symmetric scratch band.
   - Decision ID: the same contract or stock entered on the same day in several
     accounts is one decision.
-Not yet: matching to scanner flags, grading by setup, price paths.
+Build step 2
+  - Scan log flags grouped into setup episodes per ticker.
+  - Each trade matched to the most recent flag 1 to 5 trading days before its
+    entry (options on the underlying). Source: Scanner, Discretionary, or
+    Before scan log (entered before the scan log could have flagged it).
+  - Flag details carried onto the trade: status, score, check combination,
+    raw indicator values, market filter, scanner entry/stop/targets. For
+    stocks: Pre/Post-breakout entry and R-multiple against the scanner stop.
+  - Flags table: one row per episode, Taken or Passed.
+Not yet: price paths, target hits, flag outcomes, underlying moves (step 4+).
 
-Output: aar.xlsx with tables Trades, TradeRows, Review, RunInfo (Power Query).
+Output: aar.xlsx with tables Summary, Trades, Decisions, Flags, TradeRows,
+Review, RunInfo (Power Query).
 
 Settings (.env, all optional)
   AAR_SCRATCH_STOCK    scratch band for stocks, in %       (default 2)
   AAR_SCRATCH_OPTION   scratch band for options, in %      (default 10)
   AAR_LONG_SWING_DAYS  flag Swing trades held longer than this many trading
                        days on the Review sheet            (default 40)
+  AAR_MATCH_DAYS       a trade is a scanner trade if entered 1 to this many
+                       trading days after a flag           (default 5)
+  AAR_EPISODE_GAP      flags of one ticker no more than this many trading
+                       days apart are one setup episode    (default 5)
   AAR_OUTPUT           output file                         (default aar.xlsx)
   TRACKER_DIR, TRACKER_PREFIX, TRACKER_TABLE   same as update_tracker.py
 """
@@ -59,6 +73,9 @@ OUTPUT = Path(os.getenv("AAR_OUTPUT", str(HERE / "aar.xlsx")))
 SCRATCH = {"Stock": float(os.getenv("AAR_SCRATCH_STOCK", "2")),
            "Option": float(os.getenv("AAR_SCRATCH_OPTION", "10"))}
 LONG_SWING_DAYS = int(os.getenv("AAR_LONG_SWING_DAYS", "40"))
+MATCH_DAYS = int(os.getenv("AAR_MATCH_DAYS", "5"))        # entry 1..N trading days after a flag
+EPISODE_GAP = int(os.getenv("AAR_EPISODE_GAP", "5"))      # flags this close together = one episode
+STATUS_RANK = {"Setup": 3, "Breakout": 2, "Near miss": 1}
 
 # Action column value -> style. Anything not listed keeps its own name and is
 # reported on the Review sheet so you can decide where it belongs.
@@ -362,29 +379,206 @@ def decision_view(trades):
               EntryDate=("EntryDate", "first"), Accounts=("Account", "count"),
               Invest=("TotalInvestment", "sum"), Sale=("TotalSaleValue", "sum"),
               Net=("NetProfit", "sum")).reset_index()
+    carry = [c for c in ("Source", "FlagStatus", "EpisodeID", "Score", "Combo", "DaysAfterFlag",
+                         "DaysSinceFirstFlag", "EntryType", "ActualRiskPct", "SPYAbove50",
+                         "QQQAbove50", "HoldTradingDays") if c in trades.columns]
+    if carry:
+        d = d.merge(g[carry].first().reset_index(), on="DecisionID", how="left")
     base = np.where(d["Invest"] > 0, d["Invest"], d["Sale"])
     d["NetPct"] = np.round(np.where(base != 0, d["Net"] / np.where(base == 0, 1, base) * 100, np.nan), 2)
     d["Outcome"] = [outcome(p, a) for p, a in zip(d["NetPct"], d["Asset"])]
+    if "ActualRiskPct" in d:
+        risk = pd.to_numeric(d["ActualRiskPct"], errors="coerce")
+        d["R"] = (d["NetPct"] / risk).where(risk > 0).round(2)
     return d
 
 
+# ------------------------------------------------------------ scanner match
+def combo_name(r):
+    parts = [n for n, col in (("Squeeze", "BBSqueeze"), ("ATR", "ATRContract"), ("Volume", "VolDryup"))
+             if num(r.get(col)) > 0]
+    return " + ".join(parts) if parts else "None"
+
+
+def load_flags():
+    """Scan log rows with episode IDs. Empty frame if there is no log yet."""
+    if not SCAN_LOG.exists():
+        return pd.DataFrame()
+    f = pd.read_csv(SCAN_LOG)
+    if f.empty:
+        return f
+    f["ScanDate"] = pd.to_datetime(f["ScanDate"], errors="coerce")
+    f = f.dropna(subset=["ScanDate"])
+    f["Symbol"] = f["Symbol"].astype(str).str.strip().str.upper()
+    f["Combo"] = f.apply(combo_name, axis=1)
+    f["VolRatio"] = (f["Vol10"] / f["Vol50"]).round(3)
+    f = f.sort_values(["Symbol", "ScanDate"]).reset_index(drop=True)
+    ep, n, prev_sym, prev_date = [], 0, None, None
+    for sym, d in zip(f["Symbol"], f["ScanDate"]):
+        if sym != prev_sym or trading_days(prev_date, d) > EPISODE_GAP:
+            n += 1
+        ep.append(f"E{n:04d}")
+        prev_sym, prev_date = sym, d
+    f["EpisodeID"] = ep
+    f["EpisodeStart"] = f.groupby("EpisodeID")["ScanDate"].transform("min")
+    return f
+
+
+FLAG_FIELDS = {  # scan log column -> trade column
+    "ScanDate": "FlagDate", "Status": "FlagStatus", "EpisodeID": "EpisodeID",
+    "EpisodeStart": "FirstFlagDate", "Score": "Score", "Checks": "Checks", "Combo": "Combo",
+    "BBWidthPctile": "BBWidthPctile", "ATRRatio": "ATRRatio", "VolRatio": "VolRatio",
+    "PctBelowPivot": "PctBelowPivot", "Close": "FlagClose", "Pivot": "Pivot",
+    "BaseLow": "BaseLow", "Entry": "ScanEntry", "Stop": "ScanStop", "RiskPct": "ScanRiskPct",
+    "Target": "ScanTarget", "Target2R": "Target2R", "Target3R": "Target3R",
+    "TargetMeasured": "TargetMeasured", "Resistance": "Resistance", "TargetATR": "TargetATR",
+    "RewardRisk": "ScanRewardRisk", "RROk": "RROk", "SPYAbove50": "SPYAbove50",
+    "QQQAbove50": "QQQAbove50", "Sector": "Sector", "List": "ScanList",
+}
+
+
+def match_trades(trades, flags, review_rows):
+    """Adds Source and the matched flag's details to each trade."""
+    t = trades.copy()
+    for col in ["Source", "DaysAfterFlag", "DaysSinceFirstFlag", *FLAG_FIELDS.values(),
+                "EntryType", "ActualRiskPct", "R"]:
+        t[col] = pd.NA
+    first_scan = flags["ScanDate"].min() if len(flags) else None
+    by_sym = {s: g for s, g in flags.groupby("Symbol")} if len(flags) else {}
+    lag_rows = []
+    for i, tr in t.iterrows():
+        entry = tr["EntryDate"]
+        if pd.isna(entry):
+            t.at[i, "Source"] = "Unknown (no entry date)"
+            continue
+        if first_scan is None or trading_days(first_scan, entry) < 1:
+            t.at[i, "Source"] = "Before scan log"
+            continue
+        g = by_sym.get(tr["Underlying"])
+        hit = None
+        if g is not None:
+            prior = g[g["ScanDate"] < entry.normalize()]
+            if len(prior):
+                last = prior.iloc[-1]
+                lag = trading_days(last["ScanDate"], entry)
+                if 1 <= lag <= MATCH_DAYS:
+                    hit = last
+                elif lag <= MATCH_DAYS * 2:   # just outside the window: helps tune it
+                    review_rows.append(("Flagged just outside the match window", tr["TradeID"],
+                                        tr["Account"], tr["Symbol"],
+                                        f"last flag {last['ScanDate']:%Y-%m-%d} ({last['Status']}), "
+                                        f"{lag} trading days before entry"))
+        if hit is None:
+            t.at[i, "Source"] = "Discretionary"
+            continue
+        t.at[i, "Source"] = "Scanner"
+        for src, dst in FLAG_FIELDS.items():
+            t.at[i, dst] = hit[src]
+        t.at[i, "DaysAfterFlag"] = trading_days(hit["ScanDate"], entry)
+        t.at[i, "DaysSinceFirstFlag"] = trading_days(hit["EpisodeStart"], entry)
+        lag_rows.append(t.at[i, "DaysAfterFlag"])
+        # stock-only measures (option premiums can't be compared to the stock's pivot)
+        px = tr["AvgEntryPrice"]
+        if tr["Asset"] == "Stock" and not blank(px) and px:
+            if not blank(hit.get("Pivot")):
+                t.at[i, "EntryType"] = "Pre-breakout" if px <= hit["Pivot"] else "Post-breakout"
+            stop = hit.get("Stop")
+            if not blank(stop) and px > stop:
+                risk = (px - stop) / px * 100
+                t.at[i, "ActualRiskPct"] = round(risk, 2)
+                if tr["Status"] == "Closed" and not blank(tr["NetPct"]):
+                    t.at[i, "R"] = round(tr["NetPct"] / risk, 2)
+    for c in ("DaysAfterFlag", "DaysSinceFirstFlag", "Score", "Checks"):
+        t[c] = pd.to_numeric(t[c], errors="coerce").astype("Int64")
+    for c in ("FlagDate", "FirstFlagDate"):
+        t[c] = pd.to_datetime(t[c], errors="coerce")
+    return t
+
+
+def flag_table(flags, trades, as_of=None):
+    """One row per setup episode: what the scanner saw and whether it was taken.
+    'Window open' = the match window after the last flag hasn't closed yet."""
+    if flags.empty:
+        return pd.DataFrame()
+    today = pd.Timestamp(as_of or pd.Timestamp.today()).normalize()
+    first = flags.sort_values("ScanDate").groupby("EpisodeID").first()
+    g = flags.groupby("EpisodeID")
+    ep = pd.DataFrame({
+        "Symbol": first["Symbol"], "FirstFlagDate": first["ScanDate"],
+        "LastFlagDate": g["ScanDate"].max(), "Flags": g.size(),
+        "BestStatus": g["Status"].agg(lambda s: max(s, key=lambda x: STATUS_RANK.get(x, 0))),
+        "Statuses": g["Status"].agg(lambda s: ", ".join(dict.fromkeys(s))),
+        "MaxScore": g["Score"].max(),
+        "FirstStatus": first["Status"], "FirstScore": first["Score"], "Combo": first["Combo"],
+        "BBWidthPctile": first["BBWidthPctile"], "ATRRatio": first["ATRRatio"],
+        "VolRatio": first["VolRatio"], "PctBelowPivot": first["PctBelowPivot"],
+        "Pivot": first["Pivot"], "ScanEntry": first.get("Entry"), "ScanStop": first.get("Stop"),
+        "ScanTarget": first.get("Target"), "ScanRewardRisk": first.get("RewardRisk"),
+        "SPYAbove50": first["SPYAbove50"], "QQQAbove50": first["QQQAbove50"],
+        "Sector": first["Sector"],
+    }).reset_index()
+    m = trades[trades["Source"] == "Scanner"]
+    taken = m.groupby("EpisodeID").agg(
+        TradeIDs=("TradeID", lambda s: ", ".join(s)),
+        DecisionIDs=("DecisionID", lambda s: ", ".join(dict.fromkeys(s))),
+        Styles=("Style", lambda s: ", ".join(dict.fromkeys(s))),
+        Assets=("Asset", lambda s: ", ".join(dict.fromkeys(s))))
+    ep = ep.merge(taken, left_on="EpisodeID", right_index=True, how="left")
+    open_window = ep["LastFlagDate"].map(lambda d: trading_days(d, today) <= MATCH_DAYS)
+    ep["Taken"] = np.where(ep["TradeIDs"].notna(), "Taken",
+                           np.where(open_window, "Window open", "Passed"))
+    return ep.sort_values(["FirstFlagDate", "MaxScore"], ascending=[False, False])
+
+
 # ------------------------------------------------------------------ summary
-def summarize(df, by):
+def summarize(df, by, report):
+    """Win/Scratch/Loss table for closed decisions, one row per group."""
     rows = []
-    for key, g in df.groupby(by, sort=True):
+    if df.empty:
+        return pd.DataFrame()
+    for key, g in df.groupby(by, sort=True, dropna=False):
         key = key if isinstance(key, tuple) else (key,)
         p = g["NetPct"].astype(float)
         wins, losses = p[g["Outcome"] == "Win"], p[g["Outcome"] == "Loss"]
         n = len(g)
-        rows.append({**dict(zip(by, key)), "N": n,
+        r = g["R"].astype(float).dropna() if "R" in g else pd.Series(dtype=float)
+        rows.append({"Report": report,
+                     "Group": " | ".join("(blank)" if pd.isna(k) else str(k) for k in key), "N": n,
                      "Win%": round((g["Outcome"] == "Win").mean() * 100, 1),
                      "Scratch%": round((g["Outcome"] == "Scratch").mean() * 100, 1),
                      "Loss%": round((g["Outcome"] == "Loss").mean() * 100, 1),
                      "AvgPct": round(p.mean(), 2), "MedianPct": round(p.median(), 2),
                      "AvgWinPct": round(wins.mean(), 2) if len(wins) else None,
                      "AvgLossPct": round(losses.mean(), 2) if len(losses) else None,
+                     "AvgR": round(r.mean(), 2) if len(r) else None,
                      "Note": "too few to read" if n < 20 else ""})
     return pd.DataFrame(rows)
+
+
+def build_summary(decisions, flags_ep, trades):
+    d = decisions
+    swing = d[d["Style"] == "Swing"]
+    live = swing[swing["Source"].isin(["Scanner", "Discretionary"])]
+    scan = swing[swing["Source"] == "Scanner"]
+    parts = [
+        summarize(d, ["Style", "Asset"], "All closed decisions by style"),
+        summarize(live, ["Asset", "Source"], "Swing: scanner vs discretionary (since scan log began)"),
+        summarize(scan, ["Asset", "FlagStatus"], "Swing scanner trades: flag status"),
+        summarize(scan, ["Asset", "Combo"], "Swing scanner trades: check combination"),
+        summarize(scan, ["Asset", "Score"], "Swing scanner trades: score"),
+        summarize(scan, ["Asset", "SPYAbove50", "QQQAbove50"],
+                  "Swing scanner trades: SPY | QQQ above 50-day"),
+        summarize(scan[scan["Asset"] == "Stock"], ["EntryType"],
+                  "Swing scanner stock trades: entry vs pivot"),
+        summarize(scan, ["Asset", "DaysAfterFlag"], "Swing scanner trades: days after flag"),
+    ]
+    out = pd.concat([p for p in parts if len(p)], ignore_index=True)
+    if len(flags_ep):
+        cnt = (flags_ep.groupby(["BestStatus", "Taken"]).size().rename("N").reset_index())
+        cnt = cnt.assign(Report="Setup episodes: taken vs passed (counts)",
+                         Group=cnt["BestStatus"] + " | " + cnt["Taken"])[["Report", "Group", "N"]]
+        out = pd.concat([out, cnt], ignore_index=True)
+    return out
 
 
 # ------------------------------------------------------------------- output
@@ -437,10 +631,14 @@ def main():
     trk, name = read_tracker(path)
     rows = chain_trades(prepare_rows(trk, short_open_fills()))
     trades, review = build_trades(rows, load_tags())
+    flags = load_flags()
+    extra = []
+    trades = match_trades(trades, flags, extra)
+    if extra:
+        review = pd.concat([review, pd.DataFrame(extra, columns=review.columns)], ignore_index=True)
     decisions = decision_view(trades)
-
-    summary = summarize(decisions, ["Style", "Asset"])
-    summary.insert(0, "Report", "Closed decisions by style")
+    flags_ep = flag_table(flags, trades)
+    summary = build_summary(decisions, flags_ep, trades)
 
     row_cols = ["TradeID", "ExcelRow", "Account", "Opened Date", "Stock Or Option", "Action",
                 "SYMBOL", "Buy Quantity", "Purchase PRICE PER SHARE", "TOTAL INVESTMENT",
@@ -453,18 +651,24 @@ def main():
                                    len(trades), len(decisions), scan_log_info(),
                                    SCRATCH["Stock"], SCRATCH["Option"],
                                    "1: trades and styles (no scanner matching yet)"]})
-    write_excel({"Summary": summary, "Trades": trades, "Decisions": decisions,
+    write_excel({"Summary": summary, "Trades": trades, "Decisions": decisions, "Flags": flags_ep,
                  "TradeRows": rows[row_cols].sort_values(["TradeID", "Opened Date"]),
                  "Review": review, "RunInfo": info})
 
     print(f"After Action Review  ({name})")
     print(f"  {len(rows)} tracker rows -> {len(trades)} trades "
           f"({(trades['Status'] == 'Closed').sum()} closed) -> {len(decisions)} closed decisions")
-    print("\n  Closed decisions by style (a decision = same entry across accounts):")
-    show = summarize(decisions, ["Style", "Asset"])
-    if len(show):
-        print(show[["Style", "Asset", "N", "Win%", "Scratch%", "Loss%", "AvgPct", "MedianPct",
-                    "Note"]].to_string(index=False))
+    cols = ["Group", "N", "Win%", "Scratch%", "Loss%", "AvgPct", "MedianPct", "Note"]
+    for rep in summary["Report"].dropna().unique() if len(summary) else []:
+        part = summary[summary["Report"] == rep]
+        if rep.startswith("Setup episodes"):
+            print(f"\n  {rep}:")
+            print(part[["Group", "N"]].to_string(index=False))
+        elif rep.startswith(("All closed", "Swing: scanner vs")):
+            print(f"\n  {rep}:")
+            print(part[cols].to_string(index=False))
+    src = trades["Source"].value_counts()
+    print("\n  Trades by source: " + ", ".join(f"{v} {k.lower()}" for k, v in src.items()))
     print(f"\n  Review items: {len(review)}"
           + (f" ({', '.join(f'{v} {k.lower()}' for k, v in review['Issue'].value_counts().items())})"
              if len(review) else ""))
