@@ -11,8 +11,8 @@ $20M+ average dollar volume, optional price ceiling, 1 year of history) so the d
 that can actually qualify.
 
 Writes
-  data\universe.txt       symbols that passed, one per line (what py scan.py --universe reads)
-  data\universe_info.csv  every member with sector, index, and pass/skip reason
+  data/universe.txt       symbols that passed, one per line (what py scan.py --universe reads)
+  data/universe_info.csv  every member with sector, index, and pass/skip reason
 
 Read-only. Pulls index lists and daily price history only.
 """

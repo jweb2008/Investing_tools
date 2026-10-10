@@ -2,7 +2,7 @@
 Scan log: every setup, near-miss and breakout the scanner finds, one row per
 stock per day, for the scorecard to grade against your trade tracker later.
 
-  data\scan_log.csv   master record (the source of truth, append-only)
+  data/scan_log.csv   master record (the source of truth, append-only)
   scanner_log.xlsx    rebuilt from the CSV each run, as Excel table "ScanLog"
                       for Power Query
 
