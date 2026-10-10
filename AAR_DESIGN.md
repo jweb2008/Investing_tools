@@ -5,7 +5,7 @@ SCORECARD_BRIEF.md, which keeps the ground rules. This document records the
 decisions made on the open questions and how the tool will work. Nothing is
 built yet.
 
-Status: DRAFT for review, 2026-10-10.
+Status: Approved for build, 2026-10-10.
 
 ## Decisions
 
@@ -71,8 +71,8 @@ Every trade gets one style. Only Swing trades feed the setup grading.
 | Style | How it's set |
 |-------|--------------|
 | Hedge | Opened by selling (sold-to-open option). From fills via Sync ID; for hand-entered rows, a negative or blank Buy Quantity with a sell-side open. |
-| Long term | Option with a year or more to expiry at open (LEAPS), or a matching line in `aar_tags.csv`. |
-| Swing | Everything else. |
+| Long term | Option with a year or more to expiry at open (LEAPS), a matching line in `aar_tags.csv`, or the words "long term" or "LEAPS" in your Action column. |
+| Swing | Everything else (or "swing" in the Action column). |
 
 `aar_tags.csv` is a small file you edit:
 
@@ -81,6 +81,10 @@ Account,Symbol,OpenedDate,Style
 Roth,MSFT,,Long term          <- every MSFT trade in Roth
 Brokerage,NVDA,2026-03-14,Swing  <- one specific trade
 ```
+
+There is no style classification in the tracker today, so `aar_tags.csv`
+is the main way to tag. The Action column is also read for those words in
+case you prefer to type it there; `aar_tags.csv` wins if they disagree.
 
 Hold length does NOT set style automatically. If it did, swing trades that
 worked and ran longer would be pulled out of the swing results, which would
@@ -112,8 +116,11 @@ exist, that tells us whether 5 days is right.
 
 | | Win | Scratch | Loss |
 |-|-----|---------|------|
-| Stocks | above +2% | -2% to +2% | below -2% |
-| Options | above +10% | -10% to +10% | below -10% |
+| Stocks | above +2% | -2% to +2% (inclusive) | below -2% |
+| Options | above +10% | -10% to +10% (inclusive) | below -10% |
+
+The band is symmetric on purpose: a failed breakout cut near breakeven is
+good trade management and is not counted with full stop-outs.
 
 Thresholds live in `.env` (AAR_SCRATCH_STOCK, AAR_SCRATCH_OPTION).
 
@@ -201,10 +208,10 @@ are never mixed into live tables.
 Steps 1 and 2 are useful right away on your existing 2026 trades (all will
 be Discretionary until scanner trades exist).
 
-## Still open
+## Resolved after review (2026-10-10)
 
-- A. Long term tagging: does your Action column already say swing or long
-  term? If so, AAR can read it instead of `aar_tags.csv`.
-- B. Scratch thresholds: are ±2% (stocks) and ±10% (options) right? Should
-  small losses also be Scratch (symmetric band), or only small gains?
-- C. Options grouped by contract (a roll starts a new trade). OK?
+- A. No style classification exists in the tracker yet. Tagging is manual
+  through `aar_tags.csv` (or Action column keywords), helped by the Review
+  sheet's list of untagged long holds.
+- B. Scratch bands ±2% (stocks) and ±10% (options), symmetric. Confirmed.
+- C. Options grouped by contract; a roll starts a new trade. Confirmed.
