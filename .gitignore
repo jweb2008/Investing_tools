@@ -39,3 +39,9 @@ Tracker Archive/
 # Generated weekly by build_universe.py
 universe.txt
 universe_pages/
+
+# Trade feed working files and personal exports
+carry_cache.txt
+history/
+Reviews/
+Archive/

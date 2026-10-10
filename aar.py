@@ -62,10 +62,12 @@ LONG_SWING_DAYS = int(os.getenv("AAR_LONG_SWING_DAYS", "40"))
 
 # Action column value -> style. Anything not listed keeps its own name and is
 # reported on the Review sheet so you can decide where it belongs.
+# STC and BTO mark the front or back end of a hedge.
 STYLE_MAP = {
     "swing": "Swing",
     "long": "Long term", "long term": "Long term", "leaps": "Long term",
     "hedge": "Hedge",
+    "stc": "Hedge", "bto": "Hedge",   # front or back end of a hedge
     "day": "Day",
 }
 

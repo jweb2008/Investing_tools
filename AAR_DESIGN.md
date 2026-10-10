@@ -75,7 +75,7 @@ The tracker's Action column already carries the style for almost every row
 |-------|----------------------------------|
 | Hedge | Opened by selling (sold-to-open option), from fills via Sync ID or a sell-side open with no cost. Overrides the Action value. |
 | From `aar_tags.csv` | A matching override line (optional file you edit). |
-| From the Action column | Swing, Long (Long term), Hedge, Day. Other values (STC, BTO) are kept as their own group until mapped. |
+| From the Action column | Swing, Long (Long term), Hedge, Day. STC and BTO are the front or back end of a hedge, so they map to Hedge. Unknown values keep their own group and show on the Review sheet. |
 | Long term | Option with a year or more to expiry at open (LEAPS), when Action is blank. |
 | Untagged | Nothing above; listed on the Review sheet. |
 
@@ -232,3 +232,6 @@ be Discretionary until scanner trades exist).
   `aar_tags.csv` for overrides.
 - B. Scratch bands ±2% (stocks) and ±10% (options), symmetric. Confirmed.
 - C. Options grouped by contract; a roll starts a new trade. Confirmed.
+- D. STC and BTO Action values are hedge legs and map to Hedge.
+- E. Same-day entries across accounts count as one decision. Confirmed (and
+  becoming rarer going forward).

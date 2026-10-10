@@ -34,6 +34,9 @@ HERE = Path(__file__).parent
 TOKEN_PATH = os.getenv("SCHWAB_TOKEN_PATH", str(HERE / "schwab_token.json"))
 OUTPUT = Path(os.getenv("TRADE_LOG_PATH", str(HERE / "trade_log.xlsx")))
 CACHE = OUTPUT.with_name("fills_cache.csv")
+POSITIONS = OUTPUT.with_name("positions_cache.csv")
+CARRY = OUTPUT.with_name("carry_cache.csv")  # 2025 fills, used only to find lots held on Jan 1
+LOOKBACK_START = dt.date.fromisoformat(os.getenv("LOOKBACK_START", "2025-01-01"))
 SYNC_START = dt.date.fromisoformat(os.getenv("SYNC_START", "2026-01-01"))
 WINDOW_DAYS = 30
 
@@ -51,7 +54,7 @@ def get_client():
         TOKEN_PATH, os.environ["SCHWAB_APP_KEY"], os.environ["SCHWAB_APP_SECRET"])
 
 
-def pull_transactions(client):
+def pull_transactions(client, start_date=None, end_date=None):
     """Returns (list of (last4, txn dict), list of status notes)."""
     r = client.get_account_numbers()
     if r.status_code == 401:
@@ -62,7 +65,9 @@ def pull_transactions(client):
     types = [client.Transactions.TransactionType.TRADE,
              client.Transactions.TransactionType.RECEIVE_AND_DELIVER]
     now = dt.datetime.now(dt.timezone.utc)
-    start = dt.datetime.combine(SYNC_START, dt.time(), dt.timezone.utc)
+    if end_date is not None:
+        now = min(now, dt.datetime.combine(end_date, dt.time(), dt.timezone.utc))
+    start = dt.datetime.combine(start_date or SYNC_START, dt.time(), dt.timezone.utc)
 
     out, notes = [], []
     for acct in accounts:
@@ -209,6 +214,52 @@ def write_excel(sheets: dict):
                  "(the fill cache was still updated).")
 
 
+def pull_carry(client):
+    """One-time pull of the fills before SYNC_START, used only to work out which
+    lots you were still holding on SYNC_START (no 2025 trades go in the tracker).
+    Schwab only serves about a year back, so early windows may fail; that's fine."""
+    print(f"Carry-forward: pulling {LOOKBACK_START} to {SYNC_START} (one time)...")
+    txns, notes = pull_transactions(client, LOOKBACK_START, SYNC_START)
+    ok = [n for n in notes if n.startswith("ok")]
+    print(f"  {len(ok)} of {len(notes)} date windows came back; "
+          f"{len(notes) - len(ok)} were older than Schwab serves")
+    rows = [row for last4, t in txns for row in parse(last4, t)]
+    df = pd.DataFrame(rows, columns=FILL_COLS)
+    reached = [n.split()[2] for n in ok]
+    df.attrs["reached"] = min(reached) if reached else None
+    df.to_csv(CARRY, index=False)
+    with open(CARRY.with_suffix(".txt"), "w") as fh:
+        fh.write("\n".join(notes))
+    print(f"  {len(df)} fills saved to {CARRY.name}"
+          + (f" (earliest window that worked starts {min(reached)})" if reached else ""))
+
+
+def pull_positions(client):
+    """What Schwab says you hold right now, for the tracker's holdings check."""
+    r = client.get_accounts(fields=[client.Account.Fields.POSITIONS])
+    if r.status_code != 200:
+        print(f"  (couldn't read current positions: HTTP {r.status_code}; holdings check skipped)")
+        return
+    rows = []
+    asof = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    for a in r.json() or []:
+        acct = a.get("securitiesAccount", {})
+        last4 = str(acct.get("accountNumber", ""))[-4:]
+        for p in acct.get("positions", []) or []:
+            inst = p.get("instrument", {})
+            if inst.get("assetType") in ("CASH_EQUIVALENT", "CURRENCY"):
+                continue
+            rows.append({"Account": last4, "Symbol": inst.get("symbol", ""),
+                         "AssetType": inst.get("assetType", ""),
+                         "Long": float(p.get("longQuantity", 0) or 0),
+                         "Short": float(p.get("shortQuantity", 0) or 0),
+                         "AvgPrice": p.get("averagePrice"), "MarketValue": p.get("marketValue"),
+                         "AsOf": asof})
+    pd.DataFrame(rows, columns=["Account", "Symbol", "AssetType", "Long", "Short",
+                                "AvgPrice", "MarketValue", "AsOf"]).to_csv(POSITIONS, index=False)
+    print(f"  current positions: {len(rows)} holdings saved for the holdings check")
+
+
 def main():
     client = get_client()
     print(f"Pulling fills since {SYNC_START}...")
@@ -224,6 +275,15 @@ def main():
              .sort_values("DateTime").reset_index(drop=True))
     fills.to_csv(CACHE, index=False)
     added = len(fills) - before
+    try:
+        pull_positions(client)
+    except Exception as e:  # never let the check block the trade sync
+        print(f"  (holdings check skipped: {e})")
+    if not CARRY.exists() or "--carry" in sys.argv:
+        try:
+            pull_carry(client)
+        except Exception as e:
+            print(f"  (carry-forward pull skipped: {e})")
 
     closed, open_pos, unmatched = match_trades(fills) if len(fills) else (pd.DataFrame(),) * 3
     info = pd.DataFrame({"Item": ["Last sync", "Sync start", "Total fills", "New this run",
