@@ -61,9 +61,12 @@ before entry. Unmatched trades are labeled "discretionary."
 - Columns: ScanDate, Symbol, Status, Score, Checks, Uptrend, NearPivot,
   BBSqueeze, ATRContract, VolDryup, Close, Pivot, PctBelowPivot, BaseLow,
   SMA50, SMA200, BBWidthPctile, ATRRatio, ATR14, Vol10, Vol50, TodayVolX,
-  SPYAbove50, QQQAbove50, Sector, MinChecks, List, Source, LoggedAt
+  Entry through RROk (see below), SPYAbove50, QQQAbove50, Sector, MinChecks,
+  List, Source, LoggedAt
 - First live scan logged: 2026-10-09
-- Not yet logged: stop, targets, reward-to-risk (Phase 4)
+- Risk levels logged from 2026-10-12 on: Entry, Stop, StopMethod,
+  RiskPerShare, RiskPct, TargetMeasured, Target2R, Target3R, Resistance,
+  TargetATR, Target (conservative), RewardRisk, RROk
 
 ### Trade tracker (results side, source of truth)
 - File: `2025-26_Trading_Tracker_<version>.xlsx` (newest version in the main

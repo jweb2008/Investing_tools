@@ -32,6 +32,9 @@ COLUMNS = [
     "Uptrend", "NearPivot", "BBSqueeze", "ATRContract", "VolDryup",
     "Close", "Pivot", "PctBelowPivot", "BaseLow", "SMA50", "SMA200",
     "BBWidthPctile", "ATRRatio", "ATR14", "Vol10", "Vol50", "TodayVolX",
+    "Entry", "Stop", "StopMethod", "RiskPerShare", "RiskPct",
+    "TargetMeasured", "Target2R", "Target3R", "Resistance", "TargetATR",
+    "Target", "RewardRisk", "RROk",
     "SPYAbove50", "QQQAbove50", "Sector", "MinChecks", "List", "Source", "LoggedAt",
 ]
 
@@ -52,6 +55,10 @@ def _sectors():
         return dict(zip(info["symbol"], info["sector"]))
     except Exception:
         return {}
+
+
+def _r(x, nd=2):
+    return None if x is None or (isinstance(x, float) and x != x) else round(float(x), nd)
 
 
 def build_rows(results, market, min_checks, list_name, source):
@@ -85,6 +92,19 @@ def build_rows(results, market, min_checks, list_name, source):
             "Vol10": int(r["vol_10"]),
             "Vol50": int(r["vol_50"]),
             "TodayVolX": round(r["today_vol_x"], 2),
+            "Entry": _r(r.get("entry")),
+            "Stop": _r(r.get("stop")),
+            "StopMethod": r.get("stop_method"),
+            "RiskPerShare": _r(r.get("risk_per_share")),
+            "RiskPct": _r(r.get("risk_pct")),
+            "TargetMeasured": _r(r.get("target_measured")),
+            "Target2R": _r(r.get("target_2r")),
+            "Target3R": _r(r.get("target_3r")),
+            "Resistance": _r(r.get("resistance")),
+            "TargetATR": _r(r.get("target_atr")),
+            "Target": _r(r.get("target")),
+            "RewardRisk": _r(r.get("reward_risk")),
+            "RROk": r.get("rr_ok"),
             "SPYAbove50": market.get("SPY"),
             "QQQAbove50": market.get("QQQ"),
             "Sector": sectors.get(r["symbol"], ""),
@@ -136,6 +156,7 @@ def append(new: pd.DataFrame):
         return "Scan log: nothing to add."
     log = load()
     merged = (pd.concat([log, new], ignore_index=True)
+              .reindex(columns=COLUMNS)
               .drop_duplicates(["ScanDate", "Symbol"], keep="last")
               .sort_values(["ScanDate", "Score", "Symbol"], ascending=[False, False, True])
               .reset_index(drop=True))

@@ -56,7 +56,11 @@ Built with the scorecard in mind from day one:
 - Stop, targets, and reward-to-risk (once Phase 4 lands)
 - Which bucket the name was moved to, if any (swing, long term, LEAPS)
 
-## Phase 4: Risk levels and price targets
+## Phase 4: Risk levels and price targets (built)
+
+levels.py. Entry = pivot (setups) or close (breakouts). Stop = tighter of
+base low and 2x ATR, never closer than 1x ATR. Optional share count from
+ACCOUNT_SIZE and RISK_PCT in .env (part of Phase 4b).
 
 - Suggested stop: base low or an ATR multiple.
 - Targets:

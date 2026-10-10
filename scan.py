@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import levels
 import scan_log
 import scanner
 from data import DataError, get_source, source_name
@@ -63,6 +64,31 @@ def print_detail(sym, r):
               f"(needs {scanner.MIN_CHECKS})")
     if r["breakout"]:
         print("  ** BREAKOUT: closed above pivot on 1.5x+ volume **")
+    print_levels(r)
+
+
+def _pct(x, entry):
+    return f"{(x - entry) / entry * 100:+.1f}%"
+
+
+def print_levels(r):
+    e = r["entry"]
+    print("  Levels (planning references, not predictions)")
+    print(f"    Entry          {e:>10.2f}   ({'close' if r['breakout'] else 'pivot'})")
+    print(f"    Stop           {r['stop']:>10.2f}   {_pct(r['stop'], e)}  ({r['stop_method']})")
+    print(f"    Risk/share     {r['risk_per_share']:>10.2f}   {r['risk_pct']:.1f}% of entry")
+    print(f"    Measured move  {r['target_measured']:>10.2f}   {_pct(r['target_measured'], e)}")
+    res = r["resistance"]
+    print(f"    Resistance     {res:>10.2f}   {_pct(res, e)}" if res
+          else "    Resistance           none   (no swing high above entry in the last year)")
+    print(f"    2R / 3R        {r['target_2r']:>10.2f} / {r['target_3r']:.2f}")
+    print(f"    3x ATR         {r['target_atr']:>10.2f}   {_pct(r['target_atr'], e)}")
+    flag = "" if r["rr_ok"] else "   << under 2:1"
+    print(f"    Target         {r['target']:>10.2f}   {_pct(r['target'], e)}  "
+          f"(lower of measured move and resistance)")
+    print(f"    Reward:risk    {r['reward_risk']:>10.1f} : 1{flag}")
+    if r["shares"] is not None:
+        print(f"    Position size  {r['shares']:>10d} shares  (ACCOUNT_SIZE x RISK_PCT / risk per share)")
 
 
 def market_check(src):
@@ -139,7 +165,8 @@ def main():
         if reason:
             skipped.append((sym, reason))
             continue
-        results.append({"symbol": sym, **scanner.score(df)})
+        r = scanner.score(df)
+        results.append({"symbol": sym, **r, **levels.compute(df, r)})
         if len(tickers) > 20 and i % 100 == 0:
             print(f"  {i}/{len(tickers)}...")
 
@@ -148,11 +175,13 @@ def main():
     elif results:
         df = pd.DataFrame(results).sort_values(["score", "pct_below_pivot"], ascending=[False, True])
         df["setup"] = [scanner.is_setup(r, args.min_checks) for r in df.to_dict("records")]
+        df["R:R"] = [f"{x:.1f}" + ("" if ok else " <2") for x, ok in zip(df["reward_risk"], df["rr_ok"])]
         shown = df if args.all else df[df["setup"]]
-        cols = {"symbol": "Symbol", "score": "Score", "checks": "Checks", "close": "Close",
-                "pivot": "Pivot",
-                "pct_below_pivot": "% Below", "bb_width_pctile": "BB %ile",
-                "atr_ratio": "ATR ratio", "breakout": "Breakout"}
+        cols = {"symbol": "Symbol", "score": "Score", "checks": "Chk", "close": "Close",
+                "pivot": "Pivot", "pct_below_pivot": "% Below", "stop": "Stop",
+                "risk_pct": "Risk%", "target": "Target", "target_pct": "Tgt%", "R:R": "R:R"}
+        if df["shares"].notna().any():
+            cols["shares"] = "Shares"
         if len(shown):
             title = ("All scores" if args.all else
                      f"{len(shown)} setups (uptrend, within 5% of pivot, "
@@ -168,8 +197,14 @@ def main():
                   "are in the scan log, not shown here.")
         brk = df[df["breakout"]]
         if len(brk):
-            print("\nBreakouts (uptrend, close above pivot on 1.5x+ volume): "
-                  + ", ".join(brk["symbol"]))
+            print("\nBreakouts (uptrend, close above pivot on 1.5x+ volume; entry = close):")
+            bcols = {"symbol": "Symbol", "close": "Close", "pivot": "Pivot", "today_vol_x": "Vol x",
+                     "stop": "Stop", "risk_pct": "Risk%", "target": "Target", "R:R": "R:R"}
+            print(brk[list(bcols)].rename(columns=bcols).to_string(
+                index=False, float_format=lambda x: f"{x:.2f}"))
+        if not args.all and len(shown) and (~shown["rr_ok"]).any():
+            print(f"\n<2 = reward:risk under 2:1 to the conservative target "
+                  f"({(~shown['rr_ok']).sum()} of {len(shown)} setups).")
 
     for sym, reason in skipped:
         print(f"  skipped {sym}: {reason}")
