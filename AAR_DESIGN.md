@@ -68,28 +68,39 @@ position goes from flat to open and ends when it is flat again.
 
 Every trade gets one style. Only Swing trades feed the setup grading.
 
-| Style | How it's set |
-|-------|--------------|
-| Hedge | Opened by selling (sold-to-open option). From fills via Sync ID; for hand-entered rows, a negative or blank Buy Quantity with a sell-side open. |
-| Long term | Option with a year or more to expiry at open (LEAPS), a matching line in `aar_tags.csv`, or the words "long term" or "LEAPS" in your Action column. |
-| Swing | Everything else (or "swing" in the Action column). |
+The tracker's Action column already carries the style for almost every row
+(Swing, Long, Hedge, Day, plus STC and BTO), so it is the main source.
 
-`aar_tags.csv` is a small file you edit:
+| Style | How it's set (first match wins) |
+|-------|----------------------------------|
+| Hedge | Opened by selling (sold-to-open option), from fills via Sync ID or a sell-side open with no cost. Overrides the Action value. |
+| From `aar_tags.csv` | A matching override line (optional file you edit). |
+| From the Action column | Swing, Long (Long term), Hedge, Day. Other values (STC, BTO) are kept as their own group until mapped. |
+| Long term | Option with a year or more to expiry at open (LEAPS), when Action is blank. |
+| Untagged | Nothing above; listed on the Review sheet. |
+
+Trades are chained per account, symbol AND row style, so a swing lot traded
+on top of a long-term core position in the same account stays its own trade.
+
+`aar_tags.csv` format:
 
 ```
 Account,Symbol,OpenedDate,Style
 Roth,MSFT,,Long term          <- every MSFT trade in Roth
-Brokerage,NVDA,2026-03-14,Swing  <- one specific trade
+Joint,NVDA,2026-03-14,Swing   <- one specific trade
 ```
 
-There is no style classification in the tracker today, so `aar_tags.csv`
-is the main way to tag. The Action column is also read for those words in
-case you prefer to type it there; `aar_tags.csv` wins if they disagree.
-
 Hold length does NOT set style automatically. If it did, swing trades that
-worked and ran longer would be pulled out of the swing results, which would
-make the swing results look worse than they are. Instead, untagged trades
-held over 40 trading days are listed on the Review sheet so you can tag them.
+worked and ran longer would be pulled out of the swing results. Swing trades
+held over 40 trading days are listed on the Review sheet instead.
+
+## Step 2b: Decisions across accounts
+
+The same stock or contract entered on the same day in several accounts is one
+decision (DecisionID). Setup grading counts decisions, combining the
+accounts' recorded Net Profit and TOTAL INVESTMENT, so one entry split
+across three family accounts counts once, not three times. Per-account
+trades stay available for account filters.
 
 ## Step 3: Match trades to scanner flags
 
@@ -165,6 +176,7 @@ Each sheet is a named table for Power Query.
 |---------------|----------|
 | Summary | Headline tables (below), printed to the console too |
 | Trades | One row per trade with everything above |
+| Decisions | Closed trades rolled up across accounts (what setup grading counts) |
 | TradeRows | Each tracker row with its Trade ID, for checking the grouping |
 | Flags | One row per setup episode with its outcome and Taken flag |
 | Review | Data issues: untagged long holds, unplaceable rows, entry lag spread, flags with missing levels |
@@ -208,10 +220,15 @@ are never mixed into live tables.
 Steps 1 and 2 are useful right away on your existing 2026 trades (all will
 be Discretionary until scanner trades exist).
 
+## Build log
+
+- 2026-10-10 Step 1 built (`aar.py`): trades, styles, decisions, outcomes,
+  Review sheet. Tested on tracker 10.9.11: 299 rows, 200 trades, 139 closed
+  decisions; trade Net Profit ties to tracker rows to the cent.
+
 ## Resolved after review (2026-10-10)
 
-- A. No style classification exists in the tracker yet. Tagging is manual
-  through `aar_tags.csv` (or Action column keywords), helped by the Review
-  sheet's list of untagged long holds.
+- A. Style comes from the Action column you fill in by hand, with
+  `aar_tags.csv` for overrides.
 - B. Scratch bands ±2% (stocks) and ±10% (options), symmetric. Confirmed.
 - C. Options grouped by contract; a roll starts a new trade. Confirmed.
