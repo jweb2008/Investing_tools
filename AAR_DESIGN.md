@@ -247,6 +247,12 @@ be Discretionary until scanner trades exist).
   and target counts as Stop, and targets are only credited before the stop
   day. `--no-prices` skips Schwab. Tested with hand-built bar scenarios and
   an end-to-end run on the real tracker (second run: 0 requests).
+- 2026-10-10 Dashboard: `aar_report.py` writes `aar_report.html` on every
+  run, a self-contained page (inline SVG, no internet) with headline tiles,
+  win/scratch/loss by style, cumulative net profit, return spreads, option
+  days to expiry and stock move vs option result, scanner vs discretionary,
+  setups per scan day and setup outcomes. Validated palette, light and dark,
+  hover readouts and a table view on every chart.
 
 ## Resolved after review (2026-10-10)
 

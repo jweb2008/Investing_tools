@@ -44,7 +44,8 @@ Build step 3
   py aar.py --source yahoo   price history from Yahoo instead
 
 Output: aar.xlsx with tables Summary, Trades, Decisions, Flags, TradeRows,
-Review, RunInfo (Power Query).
+Review, RunInfo (Power Query), and aar_report.html, a dashboard of charts
+(see aar_report.py) you open in a browser.
 
 Settings (.env, all optional)
   AAR_SCRATCH_STOCK    scratch band for stocks, in %       (default 2)
@@ -84,6 +85,7 @@ FILLS = Path(os.getenv("TRADE_LOG_PATH", str(HERE / "trade_log.xlsx"))).with_nam
 SCAN_LOG = HERE / "data" / "scan_log.csv"
 TAGS = HERE / "aar_tags.csv"
 OUTPUT = Path(os.getenv("AAR_OUTPUT", str(HERE / "aar.xlsx")))
+REPORT = OUTPUT.with_name("aar_report.html")
 
 SCRATCH = {"Stock": float(os.getenv("AAR_SCRATCH_STOCK", "2")),
            "Option": float(os.getenv("AAR_SCRATCH_OPTION", "10"))}
@@ -974,6 +976,11 @@ def main():
     write_excel({"Summary": summary, "Trades": trades, "Decisions": decisions, "Flags": flags_ep,
                  "TradeRows": rows[row_cols].sort_values(["TradeID", "Opened Date"]),
                  "Review": review, "RunInfo": info})
+    try:
+        import aar_report
+        aar_report.build(decisions, trades, flags_ep, review, info, REPORT)
+    except Exception as e:   # the dashboard never blocks the workbook
+        print(f"  Dashboard not built: {type(e).__name__}: {e}")
 
     print(f"  {len(rows)} tracker rows -> {len(trades)} trades "
           f"({(trades['Status'] == 'Closed').sum()} closed) -> {len(decisions)} closed decisions")
@@ -998,6 +1005,8 @@ def main():
           + (f" ({', '.join(f'{v} {k.lower()}' for k, v in review['Issue'].value_counts().items())})"
              if len(review) else ""))
     print(f"  -> {OUTPUT}")
+    if REPORT.exists():
+        print(f"  -> {REPORT}  (open in your browser)")
 
 
 if __name__ == "__main__":

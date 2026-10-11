@@ -45,3 +45,6 @@ carry_cache.txt
 history/
 Reviews/
 Archive/
+
+# AAR dashboard (rebuilt each run, contains your trade data)
+aar_report.html
