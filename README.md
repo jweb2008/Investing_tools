@@ -78,6 +78,15 @@ count for wash sales. Planning tool only, not tax advice.
 - `py highlight_dups.py --blanks` marks blank cells to fill (orange) and empty
   placeholder rows to delete (red).
 
+## After Action Review (AAR)
+`py aar.py` grades how trades turned out, using the tracker as the source of
+truth (read-only), and writes `aar.xlsx`: Summary, Trades, Decisions, Flags,
+TradeRows, Review, RunInfo. It matches trades to scanner flags, pulls daily
+price history (cached in `data\aar_bars`, read-only), and grades every setup
+the scanner found, taken or not. `py aar.py --no-prices` skips Schwab. Run it
+when the scan and the trade feed aren't running. Style comes from the Action
+column; `aar_tags.csv` can override it. Details in AAR_DESIGN.md.
+
 ## Back up
 `fills_cache.csv` is the master record. Back it up (it's what keeps history
 after Schwab stops serving older trades). Keep `.env` and `schwab_token.json`

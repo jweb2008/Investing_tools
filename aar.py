@@ -29,7 +29,19 @@ Build step 2
     raw indicator values, market filter, scanner entry/stop/targets. For
     stocks: Pre/Post-breakout entry and R-multiple against the scanner stop.
   - Flags table: one row per episode, Taken or Passed.
-Not yet: price paths, target hits, flag outcomes, underlying moves (step 4+).
+Build step 3
+  - Daily bars from data.py (Schwab, read-only), cached in data/aar_bars so a
+    finished trade or setup never costs another request.
+  - Swing/Day trades: underlying move, best and worst move while held, and
+    for scanner trades whether the stop or each target was reached.
+    Options: R and entry type measured on the underlying.
+  - Options: days to expiry at entry, in buckets.
+  - Every setup episode graded on its own: triggered, stop or target first,
+    highest target, 10 and 20 session returns, R. Reports by status, check
+    combination, score, market filter, and taken vs passed.
+
+  py aar.py --no-prices      skip Schwab entirely (cached bars only)
+  py aar.py --source yahoo   price history from Yahoo instead
 
 Output: aar.xlsx with tables Summary, Trades, Decisions, Flags, TradeRows,
 Review, RunInfo (Power Query).
@@ -43,6 +55,9 @@ Settings (.env, all optional)
                        trading days after a flag           (default 5)
   AAR_EPISODE_GAP      flags of one ticker no more than this many trading
                        days apart are one setup episode    (default 5)
+  AAR_TRIGGER_DAYS     a setup must trade through Entry within this many
+                       sessions to count as triggered      (default 5)
+  AAR_OUTCOME_DAYS     sessions to follow a triggered setup (default 20)
   AAR_OUTPUT           output file                         (default aar.xlsx)
   TRACKER_DIR, TRACKER_PREFIX, TRACKER_TABLE   same as update_tracker.py
 """
@@ -76,6 +91,12 @@ LONG_SWING_DAYS = int(os.getenv("AAR_LONG_SWING_DAYS", "40"))
 MATCH_DAYS = int(os.getenv("AAR_MATCH_DAYS", "5"))        # entry 1..N trading days after a flag
 EPISODE_GAP = int(os.getenv("AAR_EPISODE_GAP", "5"))      # flags this close together = one episode
 STATUS_RANK = {"Setup": 3, "Breakout": 2, "Near miss": 1}
+BARS_DIR = HERE / "data" / "aar_bars"
+TRIGGER_DAYS = int(os.getenv("AAR_TRIGGER_DAYS", "5"))    # setup must trigger within N days
+OUTCOME_DAYS = int(os.getenv("AAR_OUTCOME_DAYS", "20"))   # follow a triggered setup N days
+DTE_BUCKETS = [(14, "0-14 days"), (45, "15-45 days"), (10**6, "46+ days")]
+TARGET_COLS = [("Target2R", "2R"), ("TargetMeasured", "Measured move"),
+               ("Resistance", "Resistance"), ("TargetATR", "3x ATR"), ("Target3R", "3R")]
 
 # Action column value -> style. Anything not listed keeps its own name and is
 # reported on the Review sheet so you can decide where it belongs.
@@ -381,7 +402,9 @@ def decision_view(trades):
               Net=("NetProfit", "sum")).reset_index()
     carry = [c for c in ("Source", "FlagStatus", "EpisodeID", "Score", "Combo", "DaysAfterFlag",
                          "DaysSinceFirstFlag", "EntryType", "ActualRiskPct", "SPYAbove50",
-                         "QQQAbove50", "HoldTradingDays") if c in trades.columns]
+                         "QQQAbove50", "HoldTradingDays", "DaysToExpiry", "DTEBucket",
+                         "UnderMovePct", "MFEPct", "MAEPct", "StopHit", "HighestTarget", "UnderR")
+             if c in trades.columns]
     if carry:
         d = d.merge(g[carry].first().reset_index(), on="DecisionID", how="left")
     base = np.where(d["Invest"] > 0, d["Invest"], d["Sale"])
@@ -390,6 +413,8 @@ def decision_view(trades):
     if "ActualRiskPct" in d:
         risk = pd.to_numeric(d["ActualRiskPct"], errors="coerce")
         d["R"] = (d["NetPct"] / risk).where(risk > 0).round(2)
+    if "UnderR" in d:   # options: R measured on the underlying
+        d["R"] = d["R"].where(d["Asset"] == "Stock", pd.to_numeric(d["UnderR"], errors="coerce"))
     return d
 
 
@@ -514,6 +539,7 @@ def flag_table(flags, trades, as_of=None):
         "VolRatio": first["VolRatio"], "PctBelowPivot": first["PctBelowPivot"],
         "Pivot": first["Pivot"], "ScanEntry": first.get("Entry"), "ScanStop": first.get("Stop"),
         "ScanTarget": first.get("Target"), "ScanRewardRisk": first.get("RewardRisk"),
+        **{c: first.get(c) for c, _ in TARGET_COLS},
         "SPYAbove50": first["SPYAbove50"], "QQQAbove50": first["QQQAbove50"],
         "Sector": first["Sector"],
     }).reset_index()
@@ -528,6 +554,236 @@ def flag_table(flags, trades, as_of=None):
     ep["Taken"] = np.where(ep["TradeIDs"].notna(), "Taken",
                            np.where(open_window, "Window open", "Passed"))
     return ep.sort_values(["FirstFlagDate", "MaxScore"], ascending=[False, False])
+
+
+# ------------------------------------------------------------------- prices
+def last_completed_session(now=None):
+    """Most recent trading day whose daily bar is final (after 4:15 PM ET)."""
+    now = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz="America/New_York")
+    if now.tzinfo is None:
+        now = now.tz_localize("America/New_York")
+    d = np.datetime64(now.date(), "D")
+    if np.is_busday(d, holidays=NYSE_HOLIDAYS):
+        if now.time() >= dt.time(16, 15):
+            return pd.Timestamp(d)
+        return pd.Timestamp(np.busday_offset(d, -1, holidays=NYSE_HOLIDAYS))
+    return pd.Timestamp(np.busday_offset(d, 0, roll="backward", holidays=NYSE_HOLIDAYS))
+
+
+def add_trading_days(date, n):
+    d = np.busday_offset(np.datetime64(pd.Timestamp(date).date(), "D"), n, roll="forward",
+                         holidays=NYSE_HOLIDAYS)
+    return pd.Timestamp(d)
+
+
+class PriceBook:
+    """Daily bars per symbol, cached in data/aar_bars/<SYMBOL>.csv. A symbol is
+    only fetched when the cache doesn't reach the date a calculation needs, so
+    finished trades and setups never cost another request."""
+
+    def __init__(self, source=None, enabled=True, now=None):
+        self.enabled = enabled
+        self._source = source
+        self._mem = {}
+        self.fetched, self.failed, self.stopped = [], {}, None
+        self.through = last_completed_session(now)
+
+    def source(self):
+        if self._source is None:
+            from data import get_source   # read-only price history, same as the scanner
+            self._source = get_source()
+        return self._source
+
+    def _path(self, sym):
+        return BARS_DIR / f"{sym.replace('/', '_').replace('.', '_')}.csv"
+
+    def _cached(self, sym):
+        if sym in self._mem:
+            return self._mem[sym]
+        p = self._path(sym)
+        df = None
+        if p.exists():
+            df = pd.read_csv(p, index_col=0, parse_dates=True)
+        self._mem[sym] = df
+        return df
+
+    def bars(self, sym, need_through):
+        """Bars for sym, fetching only if the cache ends before need_through."""
+        need = min(pd.Timestamp(need_through).normalize(), self.through)
+        df = self._cached(sym)
+        if df is not None and len(df) and df.index.max() >= need:
+            return df
+        if not self.enabled or self.stopped or sym in self.failed:
+            return df
+        try:
+            new = self.source().history(sym)
+        except Exception as e:                       # login expired stops all fetching
+            if type(e).__name__ == "DataError":
+                self.stopped = str(e)
+            else:
+                self.failed[sym] = str(e)[:120]
+            return df
+        if new is None or new.empty:
+            self.failed[sym] = "no price history returned"
+            return df
+        new = new[["open", "high", "low", "close", "volume"]].copy()
+        new.index = pd.to_datetime(new.index).normalize()
+        merged = new if df is None else pd.concat([df[~df.index.isin(new.index)], new]).sort_index()
+        BARS_DIR.mkdir(parents=True, exist_ok=True)
+        merged.to_csv(self._path(sym))
+        self._mem[sym] = merged
+        self.fetched.append(sym)
+        return merged
+
+
+def window(df, start, end):
+    if df is None or df.empty:
+        return df
+    return df[(df.index >= pd.Timestamp(start).normalize()) & (df.index <= pd.Timestamp(end).normalize())]
+
+
+def dte_bucket(days):
+    if days is None or pd.isna(days):
+        return pd.NA
+    for limit, label in DTE_BUCKETS:
+        if days <= limit:
+            return label
+    return pd.NA
+
+
+def add_option_dte(trades):
+    t = trades.copy()
+    exp = t["Symbol"].map(option_expiry)
+    dte = [(e - d).days if e is not None and not pd.isna(d) and a == "Option" else pd.NA
+           for e, d, a in zip(exp, t["EntryDate"], t["Asset"])]
+    t["DaysToExpiry"] = pd.array(dte, dtype="Int64")
+    t["DTEBucket"] = [dte_bucket(x) for x in dte]
+    return t
+
+
+def trade_paths(trades, book):
+    """What the underlying did while each Swing/Day trade was open (daily bars,
+    entry day through exit day). Stocks are measured from your average entry
+    price, options from the underlying's close on the entry day."""
+    t = trades.copy()
+    new_cols = ["UnderEntry", "UnderExit", "UnderMovePct", "MFEPct", "MAEPct", "PathNote",
+                "StopHit", "HighestTarget", "UnderR"] + [f"Hit{lbl.replace(' ', '')}" for _, lbl in TARGET_COLS]
+    for c in new_cols:
+        t[c] = pd.NA
+    for i, tr in t.iterrows():
+        if tr["Style"] not in ("Swing", "Day") or tr["Status"] != "Closed" or pd.isna(tr["EntryDate"]):
+            continue
+        df = book.bars(tr["Underlying"], tr["ExitDate"])
+        w = window(df, tr["EntryDate"], tr["ExitDate"])
+        if w is None or w.empty or w.index.min() > pd.Timestamp(tr["EntryDate"]).normalize():
+            t.at[i, "PathNote"] = "no price history for these dates"
+            continue
+        ref_close = float(w["close"].iloc[0])
+        ref = float(tr["AvgEntryPrice"]) if tr["Asset"] == "Stock" and not blank(tr["AvgEntryPrice"]) \
+            else ref_close
+        t.at[i, "UnderEntry"] = round(ref_close, 2)
+        t.at[i, "UnderExit"] = round(float(w["close"].iloc[-1]), 2)
+        t.at[i, "UnderMovePct"] = round((w["close"].iloc[-1] / ref_close - 1) * 100, 2)
+        t.at[i, "MFEPct"] = round((w["high"].max() / ref - 1) * 100, 2)
+        t.at[i, "MAEPct"] = round((w["low"].min() / ref - 1) * 100, 2)
+        t.at[i, "PathNote"] = "daily bars, entry day to exit day"
+        if tr.get("Source") != "Scanner":
+            continue
+        stop = tr.get("ScanStop")
+        if not blank(stop):
+            t.at[i, "StopHit"] = bool(w["low"].min() <= float(stop))
+            if tr["Asset"] == "Option" and ref_close > float(stop):
+                t.at[i, "UnderR"] = round((w["close"].iloc[-1] - ref_close) / (ref_close - float(stop)), 2)
+            if tr["Asset"] == "Option" and not blank(tr.get("Pivot")):
+                t.at[i, "EntryType"] = "Pre-breakout" if ref_close <= float(tr["Pivot"]) else "Post-breakout"
+        best, best_lvl = None, -1
+        for col, lbl in TARGET_COLS:
+            lvl = tr.get(col)
+            if blank(lvl):
+                continue
+            hit = bool(w["high"].max() >= float(lvl))
+            t.at[i, f"Hit{lbl.replace(' ', '')}"] = hit
+            if hit and float(lvl) > best_lvl:
+                best, best_lvl = lbl, float(lvl)
+        t.at[i, "HighestTarget"] = best or ("none" if not blank(stop) else pd.NA)
+    return t
+
+
+def flag_outcomes(ep, book):
+    """How each setup episode played out on its own, whatever you did with it.
+    Levels come from the episode's first flag. Triggered = price traded at or
+    above Entry within TRIGGER_DAYS sessions after the flag. Then the first of
+    Stop or Target (a day touching both counts as Stop), the highest target
+    reached, and the close OUTCOME_DAYS sessions after the trigger."""
+    if ep is None or ep.empty:
+        return ep
+    e = ep.copy()
+    cols = ["Triggered", "TriggerDate", "Result", "DaysToResult", "HighestTarget",
+            "MFEPct", "MAEPct", "Ret10Pct", "Ret20Pct", "R20", "OutcomeStatus"]
+    for c in cols:
+        e[c] = pd.NA
+    for i, r in e.iterrows():
+        entry = r["ScanEntry"] if not blank(r.get("ScanEntry")) else r.get("Pivot")
+        if blank(entry):
+            e.at[i, "OutcomeStatus"] = "no entry level"
+            continue
+        entry, stop, target = float(entry), r.get("ScanStop"), r.get("ScanTarget")
+        flag_day = pd.Timestamp(r["FirstFlagDate"])
+        need = add_trading_days(flag_day, TRIGGER_DAYS + OUTCOME_DAYS + 1)
+        df = book.bars(r["Symbol"], need)
+        after = window(df, add_trading_days(flag_day, 1), need)
+        if after is None or after.empty:
+            e.at[i, "OutcomeStatus"] = "pending (no bars after flag yet)" if df is not None \
+                else "no price history"
+            continue
+        trig = after.iloc[:TRIGGER_DAYS]
+        hit = trig.index[trig["high"] >= entry]
+        if len(hit) == 0:
+            e.at[i, "Triggered"] = False
+            done = len(trig) >= TRIGGER_DAYS
+            e.at[i, "Result"] = "Not triggered" if done else pd.NA
+            e.at[i, "OutcomeStatus"] = "complete" if done else "pending"
+            continue
+        tday = hit[0]
+        e.at[i, "Triggered"], e.at[i, "TriggerDate"] = True, tday
+        path = after[after.index >= tday].iloc[:OUTCOME_DAYS + 1]   # trigger day + N sessions
+        result, n = None, None
+        for k, (d, b) in enumerate(path.iterrows()):
+            stop_hit = not blank(stop) and b["low"] <= float(stop)
+            tgt_hit = not blank(target) and b["high"] >= float(target)
+            if stop_hit:
+                result, n = "Stop first", k
+                break
+            if tgt_hit:
+                result, n = "Target first", k
+                break
+        complete = len(path) >= OUTCOME_DAYS + 1
+        e.at[i, "Result"] = result or ("Neither (open)" if not complete else f"Neither in {OUTCOME_DAYS}d")
+        e.at[i, "DaysToResult"] = n
+        # targets only count if reached before the stop day (the stop day's high
+        # may have come after the stop, so it is ignored: conservative)
+        upto = path if result != "Stop first" else path.iloc[:n]
+        best, best_lvl = "none", -1
+        for col, lbl in TARGET_COLS:
+            lvl = r.get(col)
+            if blank(lvl) or upto.empty:
+                continue
+            if upto["high"].max() >= float(lvl) and float(lvl) > best_lvl:
+                best, best_lvl = lbl, float(lvl)
+        e.at[i, "HighestTarget"] = best
+        e.at[i, "MFEPct"] = round((path["high"].max() / entry - 1) * 100, 2)
+        e.at[i, "MAEPct"] = round((path["low"].min() / entry - 1) * 100, 2)
+        if len(path) > 10:
+            e.at[i, "Ret10Pct"] = round((path["close"].iloc[10] / entry - 1) * 100, 2)
+        if complete:
+            ret20 = (path["close"].iloc[OUTCOME_DAYS] / entry - 1) * 100
+            e.at[i, "Ret20Pct"] = round(ret20, 2)
+            if not blank(stop) and entry > float(stop):
+                e.at[i, "R20"] = round(ret20 / ((entry - float(stop)) / entry * 100), 2)
+        e.at[i, "OutcomeStatus"] = "complete" if complete else ("resolved, 20d return pending"
+                                                                if result else "pending")
+    e["TriggerDate"] = pd.to_datetime(e["TriggerDate"], errors="coerce")
+    return e
 
 
 # ------------------------------------------------------------------ summary
@@ -555,6 +811,31 @@ def summarize(df, by, report):
     return pd.DataFrame(rows)
 
 
+def summarize_flags(df, by, report):
+    """How setups played out on their own (from Flags), one row per group."""
+    if df is None or df.empty or "Triggered" not in df:
+        return pd.DataFrame()
+    done = df[df["OutcomeStatus"].isin(["complete", "resolved, 20d return pending"])
+              | (df["Result"] == "Not triggered")]
+    rows = []
+    for key, g in done.groupby(by, sort=True, dropna=False):
+        key = key if isinstance(key, tuple) else (key,)
+        trig = g[g["Triggered"] == True]  # noqa: E712
+        res = trig[trig["Result"].isin(["Target first", "Stop first"])]
+        r20 = pd.to_numeric(trig["Ret20Pct"], errors="coerce").dropna()
+        rr = pd.to_numeric(trig["R20"], errors="coerce").dropna()
+        rows.append({"Report": report,
+                     "Group": " | ".join("(blank)" if pd.isna(k) else str(k) for k in key),
+                     "N": len(g), "Triggered%": round(len(trig) / len(g) * 100, 1),
+                     "TargetFirst%": round((res["Result"] == "Target first").mean() * 100, 1)
+                     if len(res) else None,
+                     "AvgRet20Pct": round(r20.mean(), 2) if len(r20) else None,
+                     "MedianRet20Pct": round(r20.median(), 2) if len(r20) else None,
+                     "AvgR20": round(rr.mean(), 2) if len(rr) else None,
+                     "Note": "too few to read" if len(g) < 20 else ""})
+    return pd.DataFrame(rows)
+
+
 def build_summary(decisions, flags_ep, trades):
     d = decisions
     swing = d[d["Style"] == "Swing"]
@@ -571,7 +852,22 @@ def build_summary(decisions, flags_ep, trades):
         summarize(scan[scan["Asset"] == "Stock"], ["EntryType"],
                   "Swing scanner stock trades: entry vs pivot"),
         summarize(scan, ["Asset", "DaysAfterFlag"], "Swing scanner trades: days after flag"),
+        summarize(swing[swing["Asset"] == "Option"], ["DTEBucket"],
+                  "Swing options: days to expiry at entry"),
+        summarize(swing[swing["Asset"] == "Option"].assign(
+            UnderDir=lambda x: pd.cut(pd.to_numeric(x["UnderMovePct"], errors="coerce"),
+                                      [-1e9, -2, 2, 1e9], labels=["Down >2%", "Flat", "Up >2%"])),
+                  ["UnderDir"], "Swing options: underlying move while held"),
     ]
+    if len(flags_ep) and "Triggered" in flags_ep:
+        parts += [
+            summarize_flags(flags_ep, ["BestStatus"], "Setups on their own: status (tests 2-of-3)"),
+            summarize_flags(flags_ep, ["Combo"], "Setups on their own: check combination"),
+            summarize_flags(flags_ep, ["FirstScore"], "Setups on their own: score"),
+            summarize_flags(flags_ep, ["SPYAbove50", "QQQAbove50"],
+                            "Setups on their own: SPY | QQQ above 50-day"),
+            summarize_flags(flags_ep, ["Taken"], "Setups on their own: taken vs passed"),
+        ]
     out = pd.concat([p for p in parts if len(p)], ignore_index=True)
     if len(flags_ep):
         cnt = (flags_ep.groupby(["BestStatus", "Taken"]).size().rename("N").reset_index())
@@ -623,6 +919,9 @@ def scan_log_info():
 def main():
     ap = argparse.ArgumentParser(description="After Action Review: grade trades from the tracker")
     ap.add_argument("--tracker", help="tracker file (default: newest in TRACKER_DIR)")
+    ap.add_argument("--no-prices", action="store_true",
+                    help="skip price history (no Schwab calls; uses cached bars only)")
+    ap.add_argument("--source", help="price source: schwab or yahoo (default: DATA_SOURCE)")
     args = ap.parse_args()
 
     path = Path(args.tracker) if args.tracker else find_latest_tracker()
@@ -634,41 +933,67 @@ def main():
     flags = load_flags()
     extra = []
     trades = match_trades(trades, flags, extra)
+    trades = add_option_dte(trades)
+    flags_ep = flag_table(flags, trades)
+
+    source = None
+    if args.source and not args.no_prices:
+        from data import get_source
+        source = get_source(args.source)
+    book = PriceBook(source=source, enabled=not args.no_prices)
+    print(f"After Action Review  ({name})")
+    if not args.no_prices:
+        print("  Price history: checking cache, fetching only what's missing...", flush=True)
+    trades = trade_paths(trades, book)
+    flags_ep = flag_outcomes(flags_ep, book)
+    for sym, err in book.failed.items():
+        extra.append(("Price history unavailable", "", "", sym, err))
     if extra:
         review = pd.concat([review, pd.DataFrame(extra, columns=review.columns)], ignore_index=True)
     decisions = decision_view(trades)
-    flags_ep = flag_table(flags, trades)
     summary = build_summary(decisions, flags_ep, trades)
 
     row_cols = ["TradeID", "ExcelRow", "Account", "Opened Date", "Stock Or Option", "Action",
                 "SYMBOL", "Buy Quantity", "Purchase PRICE PER SHARE", "TOTAL INVESTMENT",
                 "Closed Date", "Sell Quantity", "Total Sale Value", "% CHANGE", "Net Profit",
                 "Open/Closed", "Sync ID", "Short", "RowStyle"]
+    price_note = ("skipped (--no-prices), cached bars only" if args.no_prices else
+                  f"{len(book.fetched)} symbols fetched, {len(book.failed)} unavailable"
+                  + (f"; STOPPED: {book.stopped}" if book.stopped else ""))
     info = pd.DataFrame({"Item": ["Run", "Tracker", "Tracker rows", "Trades", "Decisions (closed)",
-                                  "Scan log", "Scratch band stock %", "Scratch band option %",
-                                  "Build step"],
+                                  "Scan log", "Price history", "Bars complete through",
+                                  "Scratch band stock %", "Scratch band option %",
+                                  "Match window (trading days)", "Episode gap",
+                                  "Trigger window / outcome window", "Build step"],
                          "Value": [dt.datetime.now().strftime("%Y-%m-%d %H:%M"), name, len(rows),
-                                   len(trades), len(decisions), scan_log_info(),
-                                   SCRATCH["Stock"], SCRATCH["Option"],
-                                   "1: trades and styles (no scanner matching yet)"]})
+                                   len(trades), len(decisions), scan_log_info(), price_note,
+                                   str(book.through.date()), SCRATCH["Stock"], SCRATCH["Option"],
+                                   f"1 to {MATCH_DAYS}", EPISODE_GAP,
+                                   f"{TRIGGER_DAYS} / {OUTCOME_DAYS} sessions",
+                                   "3: price paths, targets, option DTE, setup outcomes"]})
     write_excel({"Summary": summary, "Trades": trades, "Decisions": decisions, "Flags": flags_ep,
                  "TradeRows": rows[row_cols].sort_values(["TradeID", "Opened Date"]),
                  "Review": review, "RunInfo": info})
 
-    print(f"After Action Review  ({name})")
     print(f"  {len(rows)} tracker rows -> {len(trades)} trades "
           f"({(trades['Status'] == 'Closed').sum()} closed) -> {len(decisions)} closed decisions")
-    cols = ["Group", "N", "Win%", "Scratch%", "Loss%", "AvgPct", "MedianPct", "Note"]
+    print(f"  Price history: {price_note}")
+    show = ("All closed", "Swing: scanner vs", "Swing options: days to expiry",
+            "Swing options: underlying move", "Setups on their own: status",
+            "Setups on their own: taken")
     for rep in summary["Report"].dropna().unique() if len(summary) else []:
-        part = summary[summary["Report"] == rep]
-        if rep.startswith("Setup episodes"):
-            print(f"\n  {rep}:")
-            print(part[["Group", "N"]].to_string(index=False))
-        elif rep.startswith(("All closed", "Swing: scanner vs")):
-            print(f"\n  {rep}:")
-            print(part[cols].to_string(index=False))
+        if not rep.startswith(show) and not rep.startswith("Setup episodes"):
+            continue
+        part = summary[summary["Report"] == rep].dropna(axis=1, how="all")
+        keep = [c for c in ["Group", "N", "Win%", "Scratch%", "Loss%", "AvgPct", "MedianPct",
+                            "Triggered%", "TargetFirst%", "AvgRet20Pct", "AvgR20", "Note"]
+                if c in part]
+        print(f"\n  {rep}:")
+        print(part[keep].to_string(index=False))
     src = trades["Source"].value_counts()
     print("\n  Trades by source: " + ", ".join(f"{v} {k.lower()}" for k, v in src.items()))
+    if book.stopped:
+        print(f"\n  ** Price history stopped: {book.stopped}")
     print(f"\n  Review items: {len(review)}"
           + (f" ({', '.join(f'{v} {k.lower()}' for k, v in review['Issue'].value_counts().items())})"
              if len(review) else ""))

@@ -240,6 +240,13 @@ be Discretionary until scanner trades exist).
   verified with synthetic trades around real flags (window edges, same-day
   exclusion, options on the underlying, multi-flag episodes, Thanksgiving,
   pre/post-breakout, R).
+- 2026-10-10 Step 3 built: price cache (data/aar_bars, fetch only what a
+  calculation still needs), trade price paths, stop and target hits,
+  options measured on the underlying, days to expiry buckets, and every
+  setup episode graded on its own (Flags sheet). A day touching both stop
+  and target counts as Stop, and targets are only credited before the stop
+  day. `--no-prices` skips Schwab. Tested with hand-built bar scenarios and
+  an end-to-end run on the real tracker (second run: 0 requests).
 
 ## Resolved after review (2026-10-10)
 
