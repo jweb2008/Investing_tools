@@ -48,3 +48,7 @@ Archive/
 
 # AAR dashboard (rebuilt each run, contains your trade data)
 aar_report.html
+
+# Daily watchlist output and run logs
+Watchlists/
+logs/
