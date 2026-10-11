@@ -23,11 +23,10 @@ Targets
 Conservative target = lower of measured move and resistance.
 Reward-to-risk is measured to the conservative target; under 2:1 is flagged.
 
-Position size (optional): set ACCOUNT_SIZE and RISK_PCT in .env, e.g.
-ACCOUNT_SIZE=25000 and RISK_PCT=1, to get a suggested share count.
+Position size: when a sizing account is available (see account.py),
+shares = account value x RISK_PCT / risk per share, capped by available cash.
 """
 import math
-import os
 
 import numpy as np
 import pandas as pd
@@ -40,14 +39,6 @@ RESISTANCE_LOOKBACK = 252
 MIN_RR = 2.0
 
 
-def _env_float(name):
-    try:
-        v = os.getenv(name, "").strip()
-        return float(v) if v else None
-    except ValueError:
-        return None
-
-
 def nearest_resistance(df: pd.DataFrame, above: float):
     """Nearest confirmed swing high above a price, within the last year."""
     h = df["high"].iloc[-RESISTANCE_LOOKBACK:].to_numpy()
@@ -57,8 +48,8 @@ def nearest_resistance(df: pd.DataFrame, above: float):
     return float(min(levels)) if levels else None
 
 
-def compute(df: pd.DataFrame, r: dict) -> dict:
-    """r is scanner.score() output for the same df."""
+def compute(df: pd.DataFrame, r: dict, sizing: dict = None) -> dict:
+    """r is scanner.score() output for the same df; sizing from account.sizing_account()."""
     atr = r["atr14"]
     entry = r["close"] if r["breakout"] else r["pivot"]
 
@@ -90,11 +81,12 @@ def compute(df: pd.DataFrame, r: dict) -> dict:
         "reward_risk": rr,
         "rr_ok": bool(rr >= MIN_RR) if not np.isnan(rr) else False,
         "shares": None,
+        "cash_limited": False,
     }
 
-    account, risk_pct = _env_float("ACCOUNT_SIZE"), _env_float("RISK_PCT")
-    if account and risk_pct and risk > 0:
-        by_risk = math.floor(account * risk_pct / 100 / risk)
-        by_cash = math.floor(account / entry)          # never more than the account can buy
+    if sizing and risk > 0:
+        by_risk = math.floor(sizing["value"] * sizing["risk_pct"] / 100 / risk)
+        by_cash = math.floor(max(sizing["cash"], 0) / entry)   # never more than cash can buy
         out["shares"] = max(min(by_risk, by_cash), 0)
+        out["cash_limited"] = by_cash < by_risk
     return out

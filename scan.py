@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import account
 import levels
 import scan_log
 import scanner
@@ -88,7 +89,8 @@ def print_levels(r):
           f"(lower of measured move and resistance)")
     print(f"    Reward:risk    {r['reward_risk']:>10.1f} : 1{flag}")
     if r["shares"] is not None:
-        print(f"    Position size  {r['shares']:>10d} shares  (ACCOUNT_SIZE x RISK_PCT / risk per share)")
+        why = "capped by available cash" if r["cash_limited"] else "risk budget / risk per share"
+        print(f"    Position size  {r['shares']:>10d} shares  ({why})")
 
 
 def market_check(src):
@@ -150,6 +152,9 @@ def main():
             sys.exit(f"SCAN FAILED: {e}")
         print(describe_market(market))
 
+    sizing, note = account.sizing_account(src)
+    print(account.describe(sizing) if sizing else note)
+
     print(f"Scanning {len(tickers)} ticker(s) with {src.name} data...")
     started = time.time()
     results, skipped, errors = [], [], []
@@ -166,7 +171,7 @@ def main():
             skipped.append((sym, reason))
             continue
         r = scanner.score(df)
-        results.append({"symbol": sym, **r, **levels.compute(df, r)})
+        results.append({"symbol": sym, **r, **levels.compute(df, r, sizing)})
         if len(tickers) > 20 and i % 100 == 0:
             print(f"  {i}/{len(tickers)}...")
 
@@ -181,7 +186,10 @@ def main():
                 "pivot": "Pivot", "pct_below_pivot": "% Below", "stop": "Stop",
                 "risk_pct": "Risk%", "target": "Target", "target_pct": "Tgt%", "R:R": "R:R"}
         if df["shares"].notna().any():
-            cols["shares"] = "Shares"
+            df["Shares"] = [f"{int(s)}{'*' if c else ''}" if s == s and s is not None else ""
+                            for s, c in zip(df["shares"], df["cash_limited"])]
+            shown = df if args.all else df[df["setup"]]
+            cols["Shares"] = "Shares"
         if len(shown):
             title = ("All scores" if args.all else
                      f"{len(shown)} setups (uptrend, within 5% of pivot, "
@@ -202,6 +210,8 @@ def main():
                      "stop": "Stop", "risk_pct": "Risk%", "target": "Target", "R:R": "R:R"}
             print(brk[list(bcols)].rename(columns=bcols).to_string(
                 index=False, float_format=lambda x: f"{x:.2f}"))
+        if len(shown) and shown["cash_limited"].any():
+            print("* = share count capped by available cash, not by the risk budget.")
         if not args.all and len(shown) and (~shown["rr_ok"]).any():
             print(f"\n<2 = reward:risk under 2:1 to the conservative target "
                   f"({(~shown['rr_ok']).sum()} of {len(shown)} setups).")
