@@ -40,6 +40,8 @@ UNIVERSE = DATA / "universe.txt"
 SCAN_LOG = DATA / "scan_log.csv"
 UNIVERSE_MAX_AGE_DAYS = 6
 from earnings import DANGER_DAYS, WARN_DAYS  # noqa: E402
+import options as _opt  # noqa: E402
+options_cfg = {"dte": _opt.SWING_DTE_TARGET, "delta": _opt.SWING_DELTA}
 
 # NYSE full-day closures. Extend each year.
 NYSE_HOLIDAYS = {dt.date.fromisoformat(d) for d in [
@@ -109,6 +111,21 @@ COLS = [  # (header, log column, kind)
     ("ATR Contract", "ATRContract", "check"), ("Vol Dry-up", "VolDryup", "check"),
 ]
 
+OPT_COLS = [
+    ("Symbol", "Symbol", "text"), ("Status", "Status", "text"), ("Close", "Close", "price"),
+    ("Target", "Target", "price"), ("Swing Call", "OptContract", "text"), ("DTE", "OptDTE", "int"),
+    ("Mid", "OptMid", "price"), ("Delta", "OptDelta", "ratio2"), ("Breakeven", "OptBreakeven", "price"),
+    ("Bid/Ask %", "OptSpreadPct", "pct"), ("Open Int.", "OptOI", "int"), ("IV", "OptIV", "frac"),
+    ("20d Real. Vol", "HV20", "frac"), ("Est. @ Entry", "OptValEntry", "price"),
+    ("Est. @ Target", "OptValTarget", "price"), ("Est. @ Stop", "OptValStop", "price"),
+    ("Opt R:R", "OptRR", "ratio"), ("Flags", "OptFlags", "text"),
+    ("Spread: Sell", "SprShortStrike", "price"), ("Spread Debit", "SprDebit", "price"),
+    ("Spread Max Gain", "SprMaxGain", "price"), ("Spread Max R:R", "SprMaxRR", "ratio"),
+    ("Spread Est. @ Target", "SprValTarget", "price"),
+    ("LEAPS", "LeapsContract", "text"), ("LEAPS Mid", "LeapsMid", "price"),
+    ("LEAPS Delta", "LeapsDelta", "ratio2"), ("LEAPS Time Value %", "LeapsExtrinsicPct", "pct"),
+]
+
 
 def write_workbook(path, rows, near, scan_date, next_day, market):
     from openpyxl import Workbook
@@ -120,7 +137,7 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
     base = Font(name="Arial", size=10)
     wb = Workbook()
 
-    def sheet(ws, df, title, subtitle, table_name):
+    def sheet(ws, df, title, subtitle, table_name, COLS=COLS):
         ws.sheet_view.showGridLines = False
         ws["A1"] = title
         ws["A1"].font = Font(name="Arial", size=16, bold=True)
@@ -139,6 +156,8 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
                     v = None
                 elif kind == "pct":
                     v = float(v) / 100
+                elif kind in ("frac", "ratio", "ratio2", "price"):
+                    v = float(v)
                 elif kind == "check":
                     v = "✓" if v else ""
                 elif kind == "int":
@@ -150,7 +169,8 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
                 cell = ws.cell(row=i, column=c, value=v)
                 cell.font = base
                 cell.number_format = {"price": "#,##0.00", "pct": "0.0%", "ratio": "0.0",
-                                      "int": "0", "date": "ddd m/d"}.get(kind, "General")
+                                      "ratio2": "0.00", "frac": "0%", "int": "#,##0",
+                                      "date": "ddd m/d"}.get(kind, "General")
                 if kind in ("check", "int", "date"):
                     cell.alignment = Alignment(horizontal="center")
         last = hdr + max(len(df), 1)
@@ -158,7 +178,8 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
         t = Table(displayName=table_name, ref=ref)
         t.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
         ws.add_table(t)
-        if len(df):
+        keys = [k for _, k, _ in COLS]
+        if len(df) and "RewardRisk" in keys:
             rr = get_column_letter([k for _, k, _ in COLS].index("RewardRisk") + 1)
             st = get_column_letter([k for _, k, _ in COLS].index("Status") + 1)
             body = f"A{hdr + 1}:{get_column_letter(len(COLS))}{last}"
@@ -178,10 +199,17 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
             ws.conditional_formatting.add(f"{rr}{hdr + 1}:{rr}{last}", FormulaRule(
                 formula=[f"AND(ISNUMBER({rr}{hdr + 1}),{rr}{hdr + 1}<2)"],
                 font=Font(color="C00000")))
-        widths = {"Symbol": 9, "Status": 10, "Sector": 22}
+        if len(df) and "OptRR" in keys:
+            orr = get_column_letter(keys.index("OptRR") + 1)
+            fl = get_column_letter(keys.index("OptFlags") + 1)
+            ws.conditional_formatting.add(f"{orr}{hdr + 1}:{orr}{last}", FormulaRule(
+                formula=[f"AND(ISNUMBER({orr}{hdr + 1}),{orr}{hdr + 1}<2)"], font=Font(color="C00000")))
+            ws.conditional_formatting.add(f"{fl}{hdr + 1}:{fl}{last}", FormulaRule(
+                formula=[f'LEN({fl}{hdr + 1})>0'], fill=PatternFill("solid", start_color="FFEB9C")))
+        widths = {"Symbol": 9, "Status": 10, "Sector": 22, "Swing Call": 27, "LEAPS": 27, "Flags": 20}
         for c, (h, _, _) in enumerate(COLS, 1):
             ws.column_dimensions[get_column_letter(c)].width = widths.get(h, 11)
-        ws.row_dimensions[hdr].height = 28
+        ws.row_dimensions[hdr].height = 40
         ws.freeze_panes = f"B{hdr + 1}"
         ws.page_setup.orientation = "landscape"
         ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
@@ -207,6 +235,15 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
           "Uptrend and near pivot, but fewer contraction checks than required. "
           "Logged to test the cutoff; lower priority.", "NearMisses")
 
+    if "OptContract" in rows and rows["OptContract"].notna().any():
+        opt = rows.copy()
+        if {"SprMaxGain", "SprDebit"} <= set(opt.columns):
+            opt["SprMaxRR"] = opt["SprMaxGain"] / opt["SprDebit"]
+        sheet(wb.create_sheet("Options"), opt, f"Option Ideas for {nd}",
+              f"Swing calls ~{options_cfg['dte']} days at ~{options_cfg['delta']} delta, the same idea as a "
+              "debit spread, and a LEAPS line. Estimates from the close, not quotes; "
+              "prices at the open will differ.", "OptionIdeas", COLS=OPT_COLS)
+
     g = wb.create_sheet("How to Read")
     notes = [
         ("Daily Scanner Watchlist", True),
@@ -223,6 +260,19 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
          "An earnings gap can jump straight through a stop. Dates come from Yahoo Finance and "
          "can be estimates until the company confirms.", False),
         ("All levels are planning references, not predictions.", False),
+        ("", False),
+        ("Options tab", True),
+        ("Swing Call: expiration closest to 45 days (30 to 60), strike closest to 0.65 delta, "
+         "preferring open interest of 100+ with a real bid.", False),
+        ("Breakeven = strike + mid. Est. @ Entry / Target / Stop = Black-Scholes estimate of the call's "
+         "value when the stock is at the setup's entry, target and stop, at today's implied volatility, "
+         "assuming about 2 weeks pass. Opt R:R uses those estimates.", False),
+        ("Flags: wide = bid/ask over 10% of mid; thin = open interest under 100; pricey IV = implied "
+         "volatility over 1.3x the stock's 20-day realized volatility; earnings = earnings before expiration.", False),
+        ("Spread: buy the swing call, sell the call at the first strike at or above the stock target. "
+         "Max gain if the stock finishes at or above the sold strike at expiration.", False),
+        ("LEAPS: first expiration 1 year+ out at about 0.80 delta. Time Value % is the part of the premium "
+         "that decays; the rest is intrinsic value.", False),
         ("thinkorswim: Watchlist menu > Import > Paste symbols from clipboard. The run already "
          "copied the symbols; the .txt file next to this workbook has the same list.", False),
     ]

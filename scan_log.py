@@ -36,6 +36,10 @@ COLUMNS = [
     "TargetMeasured", "Target2R", "Target3R", "Resistance", "TargetATR",
     "Target", "RewardRisk", "RROk",
     "EarningsDate", "DaysToEarnings", "EarningsEstimate",
+    "OptContract", "OptExp", "OptDTE", "OptStrike", "OptMid", "OptDelta", "OptIV", "HV20",
+    "OptBreakeven", "OptSpreadPct", "OptOI", "OptValEntry", "OptValTarget", "OptValStop",
+    "OptRR", "OptFlags", "SprShortStrike", "SprDebit", "SprMaxGain", "SprValTarget",
+    "LeapsContract", "LeapsExp", "LeapsStrike", "LeapsMid", "LeapsDelta", "LeapsExtrinsicPct",
     "SPYAbove50", "QQQAbove50", "Sector", "MinChecks", "List", "Source", "LoggedAt",
 ]
 
@@ -56,6 +60,19 @@ def _sectors():
         return dict(zip(info["symbol"], info["sector"]))
     except Exception:
         return {}
+
+
+OPTION_FIELDS = {
+    "OptContract": "opt_contract", "OptExp": "opt_exp", "OptDTE": "opt_dte",
+    "OptStrike": "opt_strike", "OptMid": "opt_mid", "OptDelta": "opt_delta", "OptIV": "opt_iv",
+    "HV20": "hv20", "OptBreakeven": "opt_breakeven", "OptSpreadPct": "opt_spread_pct",
+    "OptOI": "opt_oi", "OptValEntry": "opt_val_entry", "OptValTarget": "opt_val_target",
+    "OptValStop": "opt_val_stop", "OptRR": "opt_rr", "OptFlags": "opt_flags",
+    "SprShortStrike": "spr_short_strike", "SprDebit": "spr_debit", "SprMaxGain": "spr_max_gain",
+    "SprValTarget": "spr_val_target", "LeapsContract": "leaps_contract", "LeapsExp": "leaps_exp",
+    "LeapsStrike": "leaps_strike", "LeapsMid": "leaps_mid", "LeapsDelta": "leaps_delta",
+    "LeapsExtrinsicPct": "leaps_extrinsic_pct",
+}
 
 
 def _r(x, nd=2):
@@ -109,6 +126,8 @@ def build_rows(results, market, min_checks, list_name, source):
             "EarningsDate": (r.get("earn") or {}).get("date"),
             "DaysToEarnings": (r.get("earn") or {}).get("days"),
             "EarningsEstimate": (r.get("earn") or {}).get("estimate") if (r.get("earn") or {}).get("date") else None,
+            **{col: (_r(r.get(key), 4) if isinstance(r.get(key), float) else r.get(key))
+               for col, key in OPTION_FIELDS.items()},
             "SPYAbove50": market.get("SPY"),
             "QQQAbove50": market.get("QQQ"),
             "Sector": sectors.get(r["symbol"], ""),

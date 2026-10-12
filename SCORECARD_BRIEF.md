@@ -64,6 +64,12 @@ before entry. Unmatched trades are labeled "discretionary."
   Entry through RROk (see below), SPYAbove50, QQQAbove50, Sector, MinChecks,
   List, Source, LoggedAt
 - First live scan logged: 2026-10-09
+- Option ideas logged from 2026-10-12 on (per setup): OptContract, OptExp,
+  OptDTE, OptStrike, OptMid, OptDelta, OptIV, HV20, OptBreakeven, OptSpreadPct,
+  OptOI, OptValEntry/Target/Stop, OptRR, OptFlags, SprShortStrike, SprDebit,
+  SprMaxGain, SprValTarget, LeapsContract, LeapsExp, LeapsStrike, LeapsMid,
+  LeapsDelta, LeapsExtrinsicPct. Lets the review compare the suggested option
+  (and spread) against the stock setup.
 - Risk levels logged from 2026-10-12 on: Entry, Stop, StopMethod,
   RiskPerShare, RiskPct, TargetMeasured, Target2R, Target3R, Resistance,
   TargetATR, Target (conservative), RewardRisk, RROk

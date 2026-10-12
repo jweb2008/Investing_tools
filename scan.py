@@ -19,6 +19,7 @@ import pandas as pd
 
 import account
 import earnings
+import options
 import levels
 import scan_log
 import scanner
@@ -74,6 +75,7 @@ def print_detail(sym, r):
         print(f"  Next earnings    {e['date']:%a %m/%d/%Y}{est}, {e['days']} days out{warn}")
     elif e is not None:
         print("  Next earnings    not scheduled / not available")
+    print_options(r)
 
 
 def _pct(x, entry):
@@ -117,6 +119,57 @@ def add_earnings(results, min_checks, single=False):
         r["earn"] = info.get(r["symbol"])
 
 
+def add_options(results, src, min_checks, single=False):
+    """Swing call, debit spread and LEAPS ideas for setups and breakouts (Schwab only)."""
+    if getattr(src, "client", None) is None:
+        print("Options skipped: option chains need Schwab data.")
+        return
+    want = [r for r in results if single or r["breakout"] or scanner.is_setup(r, min_checks)]
+    if len(want) > 1:
+        print(f"Looking up option chains for {len(want)} setups...")
+    fails = 0
+    for r in want:
+        try:
+            r.update(options.ideas(src, r["symbol"], r, (r.get("earn") or {}).get("date")))
+        except DataError:
+            raise
+        except Exception as e:
+            r["opt_error"] = str(e)[:80]
+        if r.get("opt_error"):
+            fails += 1
+    if fails:
+        print(f"Options: {fails} of {len(want)} chain lookups had problems (blank in the table).")
+
+
+def print_options(r):
+    if not r.get("opt_contract") and not r.get("leaps_contract"):
+        if r.get("opt_error"):
+            print(f"  Options          unavailable ({r['opt_error']})")
+        return
+    f = lambda v, d=2: "n/a" if v is None or v != v else f"{v:,.{d}f}"
+    if r.get("opt_contract"):
+        print("  Swing call (planning estimates, not quotes)")
+        print(f"    Contract       {r['opt_contract']}   {r['opt_dte']} days")
+        print(f"    Bid / ask      {f(r['opt_bid'])} / {f(r['opt_ask'])}   mid {f(r['opt_mid'])}  "
+              f"(spread {f(r['opt_spread_pct'], 1)}%)")
+        print(f"    Delta / IV     {f(r['opt_delta'])} / {f(r['opt_iv'] * 100 if r['opt_iv'] == r['opt_iv'] else None, 0)}%"
+              f"   20-day realized {f(r['hv20'] * 100 if r['hv20'] == r['hv20'] else None, 0)}%   OI {r['opt_oi']:,}")
+        print(f"    Breakeven      {f(r['opt_breakeven'])}  ({f(r['opt_be_pct'], 1)}% above close)")
+        print(f"    Est. value     at entry {f(r['opt_val_entry'])}, at target {f(r['opt_val_target'])}, "
+              f"at stop {f(r['opt_val_stop'])}  (after ~{options.HOLD_DAYS} days)")
+        print(f"    Option R:R     {f(r['opt_rr'], 1)} : 1")
+        if r.get("opt_flags"):
+            print(f"    Flags          {r['opt_flags']}")
+        if r.get("spr_debit"):
+            print(f"  Debit spread     buy {r['opt_strike']:.2f} / sell {r['spr_short_strike']:.2f} call, "
+                  f"debit {f(r['spr_debit'])}, max gain {f(r['spr_max_gain'])} "
+                  f"({f(r['spr_max_rr'], 1)}:1), est. value at target {f(r['spr_val_target'])}")
+    if r.get("leaps_contract"):
+        print(f"  LEAPS            {r['leaps_contract']}   {r['leaps_dte']} days, mid {f(r['leaps_mid'])}, "
+              f"delta {f(r['leaps_delta'])}, {f(r['leaps_extrinsic_pct'], 0)}% time value, "
+              f"breakeven {f(r['leaps_breakeven'])}")
+
+
 def market_check(src):
     """SPY and QQQ: True if the last close is above the 50-day SMA, None if unavailable."""
     out = {}
@@ -149,6 +202,7 @@ def main():
     ap.add_argument("--min-checks", type=int, default=scanner.MIN_CHECKS, choices=[1, 2, 3],
                     help="contraction checks a setup needs (default 2)")
     ap.add_argument("--no-log", action="store_true", help="don't write to the scan log")
+    ap.add_argument("--no-options", action="store_true", help="skip the option chain lookups")
     args = ap.parse_args()
 
     if args.universe:
@@ -195,11 +249,14 @@ def main():
             skipped.append((sym, reason))
             continue
         r = scanner.score(df)
+        r["hv20"] = options.realized_vol(df["close"])
         results.append({"symbol": sym, **r, **levels.compute(df, r, sizing)})
         if len(tickers) > 20 and i % 100 == 0:
             print(f"  {i}/{len(tickers)}...")
 
     add_earnings(results, args.min_checks, single=len(tickers) == 1)
+    if not args.no_options:
+        add_options(results, src, args.min_checks, single=len(tickers) == 1)
 
     if len(tickers) == 1 and results:
         print_detail(tickers[0], results[0])
@@ -239,6 +296,17 @@ def main():
                      "Earnings": "Earnings"}
             print(brk[list(bcols)].rename(columns=bcols).to_string(
                 index=False, float_format=lambda x: f"{x:.2f}"))
+        if "opt_contract" in df and not args.all:
+            o = shown[shown["opt_contract"].notna()].copy() if "opt_contract" in shown else shown.iloc[0:0]
+            if len(o):
+                o["opt_oi"] = o["opt_oi"].astype("Int64")
+            if len(o):
+                print("\nSwing calls (estimates; full detail with  py scan.py SYMBOL):")
+                ocols = {"symbol": "Symbol", "opt_contract": "Call", "opt_mid": "Mid",
+                         "opt_delta": "Delta", "opt_be_pct": "BE %", "opt_spread_pct": "B/A %",
+                         "opt_oi": "OI", "opt_iv_hv": "IV/HV", "opt_rr": "Opt R:R", "opt_flags": "Flags"}
+                print(o[list(ocols)].rename(columns=ocols).to_string(
+                    index=False, float_format=lambda x: f"{x:.2f}"))
         flagged = shown[[bool(e) and e.get("level") != "" for e in shown["earn"]]]
         if len(flagged):
             print(f"\nEarnings within {earnings.WARN_DAYS} days: {len(flagged)} of {len(shown)} setups "

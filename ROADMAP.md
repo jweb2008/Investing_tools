@@ -97,6 +97,16 @@ EarningsEstimate.
 - Flag setups with earnings in the next 2 to 3 weeks.
 - Source: yfinance (Schwab is not a reliable earnings date source).
 
+## Phase 5b: Option ideas (built)
+
+options.py. Per setup: swing call (~45 DTE, ~0.65 delta), the same idea as a
+debit call spread (short leg at the stock target), and a LEAPS line (1 yr+,
+~0.80 delta). Black-Scholes estimates at entry/target/stop, flags for wide
+spreads, thin open interest, rich IV vs 20-day realized vol, and earnings
+before expiration. Logged (Opt*, Spr*, Leaps* columns) and shown on the
+watchlist Options tab. Later: IV rank from logged IV history, covered calls
+on holdings, long-term/LEAPS profile.
+
 ## Phase 6: Relative strength ranking
 
 - Relative strength vs SPY over 3 to 6 months, used to sort setups.
