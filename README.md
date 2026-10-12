@@ -86,6 +86,8 @@ price history (cached in `data\aar_bars`, read-only), and grades every setup
 the scanner found, taken or not. `py aar.py --no-prices` skips Schwab. Run it
 when the scan and the trade feed aren't running. Style comes from the Action
 column; `aar_tags.csv` can override it. Details in AAR_DESIGN.md.
+`run_aar.bat` runs it on a schedule (weekdays 6:00 PM, after the scans) and
+appends the output to `aar_log.txt`.
 
 ## Back up
 `fills_cache.csv` is the master record. Back it up (it's what keeps history

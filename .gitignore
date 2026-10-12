@@ -52,3 +52,4 @@ aar_report.html
 # Daily watchlist output and run logs
 Watchlists/
 logs/
+aar_log.txt
