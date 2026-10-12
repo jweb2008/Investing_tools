@@ -18,6 +18,7 @@ from pathlib import Path
 import pandas as pd
 
 import account
+import earnings
 import levels
 import scan_log
 import scanner
@@ -66,6 +67,13 @@ def print_detail(sym, r):
     if r["breakout"]:
         print("  ** BREAKOUT: closed above pivot on 1.5x+ volume **")
     print_levels(r)
+    e = r.get("earn")
+    if e and e.get("date"):
+        warn = {"danger": "  << inside a week", "warn": "  << inside a typical swing hold"}.get(e["level"], "")
+        est = " (estimated)" if e["estimate"] else ""
+        print(f"  Next earnings    {e['date']:%a %m/%d/%Y}{est}, {e['days']} days out{warn}")
+    elif e is not None:
+        print("  Next earnings    not scheduled / not available")
 
 
 def _pct(x, entry):
@@ -91,6 +99,22 @@ def print_levels(r):
     if r["shares"] is not None:
         why = "capped by available cash" if r["cash_limited"] else "risk budget / risk per share"
         print(f"    Position size  {r['shares']:>10d} shares  ({why})")
+
+
+def add_earnings(results, min_checks, single=False):
+    """Look up next earnings for setups and breakouts (or the one ticker checked)."""
+    want = [r["symbol"] for r in results
+            if single or r["breakout"] or scanner.is_setup(r, min_checks)]
+    info, failed = {}, 0
+    if want and results:
+        try:
+            info, failed = earnings.next_earnings(want, pd.Timestamp(results[0]["date"]).date())
+        except Exception as e:
+            print(f"Earnings dates unavailable ({str(e)[:80]}).")
+    if failed:
+        print(f"Earnings dates: {failed} of {len(want)} lookups failed (Yahoo); those show blank.")
+    for r in results:
+        r["earn"] = info.get(r["symbol"])
 
 
 def market_check(src):
@@ -175,16 +199,20 @@ def main():
         if len(tickers) > 20 and i % 100 == 0:
             print(f"  {i}/{len(tickers)}...")
 
+    add_earnings(results, args.min_checks, single=len(tickers) == 1)
+
     if len(tickers) == 1 and results:
         print_detail(tickers[0], results[0])
     elif results:
         df = pd.DataFrame(results).sort_values(["score", "pct_below_pivot"], ascending=[False, True])
         df["setup"] = [scanner.is_setup(r, args.min_checks) for r in df.to_dict("records")]
         df["R:R"] = [f"{x:.1f}" + ("" if ok else " <2") for x, ok in zip(df["reward_risk"], df["rr_ok"])]
+        df["Earnings"] = [earnings.label(e) for e in df["earn"]]
         shown = df if args.all else df[df["setup"]]
         cols = {"symbol": "Symbol", "score": "Score", "checks": "Chk", "close": "Close",
                 "pivot": "Pivot", "pct_below_pivot": "% Below", "stop": "Stop",
-                "risk_pct": "Risk%", "target": "Target", "target_pct": "Tgt%", "R:R": "R:R"}
+                "risk_pct": "Risk%", "target": "Target", "target_pct": "Tgt%", "R:R": "R:R",
+                "Earnings": "Earnings"}
         if df["shares"].notna().any():
             df["Shares"] = [f"{int(s)}{'*' if c else ''}" if s == s and s is not None else ""
                             for s, c in zip(df["shares"], df["cash_limited"])]
@@ -207,9 +235,15 @@ def main():
         if len(brk):
             print("\nBreakouts (uptrend, close above pivot on 1.5x+ volume; entry = close):")
             bcols = {"symbol": "Symbol", "close": "Close", "pivot": "Pivot", "today_vol_x": "Vol x",
-                     "stop": "Stop", "risk_pct": "Risk%", "target": "Target", "R:R": "R:R"}
+                     "stop": "Stop", "risk_pct": "Risk%", "target": "Target", "R:R": "R:R",
+                     "Earnings": "Earnings"}
             print(brk[list(bcols)].rename(columns=bcols).to_string(
                 index=False, float_format=lambda x: f"{x:.2f}"))
+        flagged = shown[[bool(e) and e.get("level") != "" for e in shown["earn"]]]
+        if len(flagged):
+            print(f"\nEarnings within {earnings.WARN_DAYS} days: {len(flagged)} of {len(shown)} setups "
+                  f"(! = within {earnings.DANGER_DAYS} days, * = within {earnings.WARN_DAYS}, "
+                  "~ = estimated date). A gap through your stop is the main risk on a multi-week hold.")
         if len(shown) and shown["cash_limited"].any():
             print("* = share count capped by available cash, not by the risk budget.")
         if not args.all and len(shown) and (~shown["rr_ok"]).any():

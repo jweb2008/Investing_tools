@@ -88,7 +88,11 @@ ACCOUNT_SIZE and RISK_PCT in .env (part of Phase 4b).
 - Warn ahead of the Saturday token expiry if the token is close to lapsing.
 - Notification method TBD (local desktop notice now, Discord later).
 
-## Phase 5: Earnings warning
+## Phase 5: Earnings warning (built)
+
+earnings.py; setups and breakouts only, cached 3 days in data/earnings_cache.json.
+Flags within 21 days, strong flag within 7. Logged as EarningsDate, DaysToEarnings,
+EarningsEstimate.
 
 - Flag setups with earnings in the next 2 to 3 weeks.
 - Source: yfinance (Schwab is not a reliable earnings date source).

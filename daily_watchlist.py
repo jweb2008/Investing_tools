@@ -39,6 +39,7 @@ LOG_DIR = HERE / "logs"
 UNIVERSE = DATA / "universe.txt"
 SCAN_LOG = DATA / "scan_log.csv"
 UNIVERSE_MAX_AGE_DAYS = 6
+from earnings import DANGER_DAYS, WARN_DAYS  # noqa: E402
 
 # NYSE full-day closures. Extend each year.
 NYSE_HOLIDAYS = {dt.date.fromisoformat(d) for d in [
@@ -103,7 +104,8 @@ COLS = [  # (header, log column, kind)
     ("Close", "Close", "price"), ("Pivot", "Pivot", "price"), ("% Below Pivot", "PctBelowPivot", "pct"),
     ("Entry", "Entry", "price"), ("Stop", "Stop", "price"), ("Risk %", "RiskPct", "pct"),
     ("Target", "Target", "price"), ("Target %", "TargetPct", "pct"), ("R:R", "RewardRisk", "ratio"),
-    ("Resistance", "Resistance", "price"), ("Squeeze", "BBSqueeze", "check"),
+    ("Resistance", "Resistance", "price"), ("Earnings", "EarningsDate", "date"),
+    ("Days to Earn.", "DaysToEarnings", "int"), ("Squeeze", "BBSqueeze", "check"),
     ("ATR Contract", "ATRContract", "check"), ("Vol Dry-up", "VolDryup", "check"),
 ]
 
@@ -141,13 +143,15 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
                     v = "✓" if v else ""
                 elif kind == "int":
                     v = int(v)
+                elif kind == "date":
+                    v = pd.Timestamp(v).to_pydatetime()
                 elif kind == "text" and key == "Symbol":
                     v = str(v)
                 cell = ws.cell(row=i, column=c, value=v)
                 cell.font = base
                 cell.number_format = {"price": "#,##0.00", "pct": "0.0%", "ratio": "0.0",
-                                      "int": "0"}.get(kind, "General")
-                if kind in ("check", "int"):
+                                      "int": "0", "date": "ddd m/d"}.get(kind, "General")
+                if kind in ("check", "int", "date"):
                     cell.alignment = Alignment(horizontal="center")
         last = hdr + max(len(df), 1)
         ref = f"A{hdr}:{get_column_letter(len(COLS))}{last}"
@@ -161,6 +165,16 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
             ws.conditional_formatting.add(body, FormulaRule(
                 formula=[f'${st}{hdr + 1}="Breakout"'],
                 fill=PatternFill("solid", start_color="C6EFCE"), font=Font(bold=True)))
+            ed = get_column_letter([k for _, k, _ in COLS].index("EarningsDate") + 1)
+            dd = get_column_letter([k for _, k, _ in COLS].index("DaysToEarnings") + 1)
+            rng = f"{ed}{hdr + 1}:{dd}{last}"
+            ws.conditional_formatting.add(rng, FormulaRule(
+                formula=[f"AND(ISNUMBER(${dd}{hdr + 1}),${dd}{hdr + 1}<={DANGER_DAYS})"],
+                fill=PatternFill("solid", start_color="F8CBAD"), font=Font(bold=True, color="9C0006"),
+                stopIfTrue=True))
+            ws.conditional_formatting.add(rng, FormulaRule(
+                formula=[f"AND(ISNUMBER(${dd}{hdr + 1}),${dd}{hdr + 1}<={WARN_DAYS})"],
+                fill=PatternFill("solid", start_color="FFEB9C")))
             ws.conditional_formatting.add(f"{rr}{hdr + 1}:{rr}{last}", FormulaRule(
                 formula=[f"AND(ISNUMBER({rr}{hdr + 1}),{rr}{hdr + 1}<2)"],
                 font=Font(color="C00000")))
@@ -180,11 +194,14 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
     sd = f"{scan_date.month}/{scan_date.day}/{scan_date:%y}"
     n_brk = int((rows["Status"] == "Breakout").sum())
     n_set = int((rows["Status"] == "Setup").sum())
+    n_earn = int((pd.to_numeric(rows.get("DaysToEarnings"), errors="coerce") <= WARN_DAYS).sum()) \
+        if "DaysToEarnings" in rows else 0
 
     ws = wb.active
     ws.title = "Watchlist"
     sheet(ws, rows, f"Daily Scanner Watchlist for {nd}",
-          f"From the {sd} close.  {n_set} setups, {n_brk} breakout(s).  Market: {mkt}.  "
+          f"From the {sd} close.  {n_set} setups, {n_brk} breakout(s), {n_earn} with earnings "
+          f"within {WARN_DAYS} days.  Market: {mkt}.  "
           "Shortlist for chart review, not buy signals.", "Watchlist")
     sheet(wb.create_sheet("Near Misses"), near, f"Near Misses for {nd}",
           "Uptrend and near pivot, but fewer contraction checks than required. "
@@ -202,6 +219,9 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
         ("Target: lower of the measured move (pivot + base depth) and the nearest overhead "
          "swing high. Blank Resistance = no swing high above entry in the last year.", False),
         ("R:R in red = reward-to-risk under 2:1 to the conservative target.", False),
+        (f"Earnings: red = within {DANGER_DAYS} days, yellow = within {WARN_DAYS} days of the scan. "
+         "An earnings gap can jump straight through a stop. Dates come from Yahoo Finance and "
+         "can be estimates until the company confirms.", False),
         ("All levels are planning references, not predictions.", False),
         ("thinkorswim: Watchlist menu > Import > Paste symbols from clipboard. The run already "
          "copied the symbols; the .txt file next to this workbook has the same list.", False),

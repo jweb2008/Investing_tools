@@ -35,6 +35,7 @@ COLUMNS = [
     "Entry", "Stop", "StopMethod", "RiskPerShare", "RiskPct",
     "TargetMeasured", "Target2R", "Target3R", "Resistance", "TargetATR",
     "Target", "RewardRisk", "RROk",
+    "EarningsDate", "DaysToEarnings", "EarningsEstimate",
     "SPYAbove50", "QQQAbove50", "Sector", "MinChecks", "List", "Source", "LoggedAt",
 ]
 
@@ -105,6 +106,9 @@ def build_rows(results, market, min_checks, list_name, source):
             "Target": _r(r.get("target")),
             "RewardRisk": _r(r.get("reward_risk")),
             "RROk": r.get("rr_ok"),
+            "EarningsDate": (r.get("earn") or {}).get("date"),
+            "DaysToEarnings": (r.get("earn") or {}).get("days"),
+            "EarningsEstimate": (r.get("earn") or {}).get("estimate") if (r.get("earn") or {}).get("date") else None,
             "SPYAbove50": market.get("SPY"),
             "QQQAbove50": market.get("QQQ"),
             "Sector": sectors.get(r["symbol"], ""),
