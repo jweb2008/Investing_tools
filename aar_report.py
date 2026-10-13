@@ -73,7 +73,7 @@ details{margin-top:6px}
 summary{cursor:pointer;color:var(--muted);font-size:12px;list-style:none}
 summary::before{content:"\\25B8  "}details[open] summary::before{content:"\\25BE  "}
 table{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px;font-variant-numeric:tabular-nums}
-th,td{text-align:right;padding:3px 6px;border-bottom:1px solid var(--grid)}
+th,td{text-align:right;padding:4px 6px;border-bottom:1px solid var(--grid);white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
 th{color:var(--ink2);font-weight:600}
 .tablewrap{overflow-x:auto}
@@ -179,6 +179,14 @@ def table(df):
                    for r in df.itertuples(index=False))
     return (f'<details><summary>Table view</summary><div class="tablewrap"><table><tr>{head}</tr>'
             f"{body}</table></div></details>")
+
+
+def table_open(df):
+    """A table shown directly (not behind 'Table view')."""
+    head = "".join(f"<th>{esc(c)}</th>" for c in df.columns)
+    body = "".join("<tr>" + "".join(f"<td>{esc('' if pd.isna(v) else v)}</td>" for v in r) + "</tr>"
+                   for r in df.itertuples(index=False))
+    return f'<div class="tablewrap"><table><tr>{head}</tr>{body}</table></div>'
 
 
 def legend(items, line=False):
@@ -397,6 +405,45 @@ def scatter(points, h=300):
     return "".join(out)
 
 
+def range_rows(rows, h_row=34):
+    """Open positions on a common R scale: stop (-1R) to target, entry at 0,
+    today's close as a dot. rows: [(label, r_now, r_target, stop_hit, value, tip)]"""
+    lo = min([-1.0] + [r for _, r, _, _, _, _ in rows]) - 0.25
+    hi = max([1.0] + [max(r, t or 0) for _, r, t, _, _, _ in rows]) + 0.25
+    left, right = 150, W - 70
+    sx = lambda v: left + (v - lo) / (hi - lo) * (right - left)
+    h = len(rows) * h_row + 34
+    out = [f'<svg viewBox="0 0 {W} {h}" role="img">']
+    for t in nice_ticks(lo, hi, 6):
+        if lo <= t <= hi:
+            out.append(f'<line x1="{sx(t):.1f}" x2="{sx(t):.1f}" y1="6" y2="{h - 24}" '
+                       f'style="stroke:var({"--axis" if t == 0 else "--grid"})"/>')
+            out.append(f'<text x="{sx(t):.1f}" y="{h - 8}" text-anchor="middle">{t:+g}R</text>')
+    for k, (lab, r, tgt, hit, value, tip) in enumerate(rows):
+        y = 12 + k * h_row + h_row / 2
+        out.append(f'<text class="lab" x="0" y="{y + 4:.1f}">{esc(lab)}</text>')
+        x0, x1 = sx(-1), sx(tgt if tgt is not None else max(r, 1))
+        out.append(f'<line x1="{x0:.1f}" x2="{x1:.1f}" y1="{y:.1f}" y2="{y:.1f}" '
+                   f'style="stroke:var(--neutral);stroke-width:4;stroke-linecap:round"/>')
+        out.append(f'<line x1="{x0:.1f}" x2="{x0:.1f}" y1="{y - 8:.1f}" y2="{y + 8:.1f}" '
+                   f'style="stroke:var(--bad);stroke-width:2"/>')
+        if tgt is not None:
+            out.append(f'<line x1="{x1:.1f}" x2="{x1:.1f}" y1="{y - 8:.1f}" y2="{y + 8:.1f}" '
+                       f'style="stroke:var(--good);stroke-width:2"/>')
+        out.append(f'<line x1="{sx(0):.1f}" x2="{sx(0):.1f}" y1="{y - 6:.1f}" y2="{y + 6:.1f}" '
+                   f'style="stroke:var(--ink);stroke-width:2"/>')
+        color = "var(--pos)" if r >= 0 else "var(--neg)"
+        cx = sx(r)
+        out.append(f'<circle cx="{cx:.1f}" cy="{y:.1f}" r="6" '
+                   f'style="fill:{color};stroke:var(--surface);stroke-width:2"/>')
+        out.append(mark("circle", value, tip, cx=f"{cx:.1f}", cy=f"{y:.1f}", r="13",
+                        style="fill:transparent"))
+        out.append(f'<text class="val" x="{right + 8}" y="{y + 4:.1f}">{r:+.2f}R'
+                   + (" ⚠" if hit else "") + "</text>")
+    out.append("</svg>")
+    return "".join(out)
+
+
 # ------------------------------------------------------------------ sections
 def _outcome_rows(df, by):
     rows = []
@@ -420,6 +467,8 @@ def build(decisions, trades, flags, review, info, out_path):
     sw_win = (swing["Outcome"] == "Win").mean() * 100 if len(swing) else None
     sw_med = swing["NetPct"].median() if len(swing) else None
     n_scan = int((trades["Source"] == "Scanner").sum()) if "Source" in trades else 0
+    n_scan_open = int(((trades["Source"] == "Scanner") & (trades["Status"] == "Open")).sum()) \
+        if "Source" in trades else 0
     n_flags = len(flags) if flags is not None else 0
     pending = int((flags["Taken"] == "Window open").sum()) if n_flags else 0
     tiles = [
@@ -429,12 +478,52 @@ def build(decisions, trades, flags, review, info, out_path):
          f"{len(swing)} swing decisions", ""),
         ("", "Swing median return", pct(sw_med), "half of swing trades did better",
          "up" if (sw_med or 0) >= 0 else "down"),
-        ("", "Scanner trades", f"{n_scan}", "entered 1-5 days after a flag", ""),
+        ("", "Scanner trades", f"{n_scan}",
+         f"{n_scan_open} open · entered 1-5 days after a flag" if n_scan_open else
+         "entered 1-5 days after a flag", ""),
         ("", "Setups logged", f"{n_flags}", f"{pending} still in their 5-day window", ""),
     ]
     parts.append('<div class="tiles">' + "".join(
         f'<div class="tile {k}"><div class="lab">{esc(l)}</div><div class="val {c}">{esc(v)}</div>'
         f'<div class="sub">{esc(s)}</div></div>' for k, l, v, s, c in tiles) + "</div>")
+
+    # ---- open positions since the scan log began
+    if "LastClose" in trades:
+        op = trades[(trades["Status"] == "Open") & trades["LastClose"].notna()].copy()
+        if len(op):
+            op = op.sort_values(["Source", "EntryDate", "Symbol"], ascending=[False, True, True])
+            parts.append("<h2>Open positions</h2><div class=\"grid\">")
+            withr = op[op["OpenR"].notna()]
+            rows = [(f"{r.Symbol} · {r.Account}", float(r.OpenR),
+                     None if pd.isna(r.TargetR) else float(r.TargetR), bool(r.OpenStopHit is True),
+                     f"{float(r.OpenR):+.2f}R · close ${float(r.LastClose):,.2f} ({pct(r.OpenMovePct)})",
+                     f"{r.Symbol} {r.Account} · to stop {pct(r.ToStopPct)}"
+                     + ("" if pd.isna(r.ToTargetPct) else f", to target {pct(r.ToTargetPct)}")
+                     + f" · day {r.DaysHeld}") for r in withr.itertuples()]
+            tb = op.assign(
+                Entry=op["EntryDate"].map(lambda d: f"{pd.Timestamp(d):%m/%d}"),
+                Flag=op.apply(lambda r: "No flag" if pd.isna(r.get("FlagDate")) else
+                              f"{r['FlagStatus']} {int(r['Score'])}", axis=1),
+                Price=op["AvgEntryPrice"].map(lambda v: "" if pd.isna(v) else f"${v:,.2f}"),
+                Close=op["LastClose"].map(lambda v: f"${v:,.2f}"),
+                Move=op["OpenMovePct"].map(pct),
+                R=op["OpenR"].map(lambda v: "" if pd.isna(v) else f"{v:+.2f}"),
+                ToStop=op["ToStopPct"].map(lambda v: "" if pd.isna(v) else pct(v)),
+                ToTarget=op["ToTargetPct"].map(lambda v: "" if pd.isna(v) else pct(v)),
+            )[["Symbol", "Account", "Flag", "Price", "Close", "Move", "R", "ToStop", "ToTarget"]]
+            body = (legend([("Stop (-1R)", "var(--bad)"), ("Entry", "var(--ink)"),
+                            ("Target", "var(--good)"), ("Close, gaining", "var(--pos)"),
+                            ("Close, losing", "var(--neg)")]) + range_rows(rows)) if rows else \
+                empty("No open scanner trades with a stop to measure against.")
+            last = pd.to_datetime(op["LastDate"]).max()
+            parts.append(card("Open swing trades vs the scanner's stop and target",
+                              f"Closing prices through {last:%a %b %d}, not the tracker. R = move from your "
+                              "entry in units of entry-to-stop. ⚠ = stop touched since entry.", body))
+            parts.append(card("Open swing positions",
+                              "Since the scan log began. Flag = the matched scan's status and score. "
+                              "Stop and Target = how far the close is from each. Full detail: aar.xlsx.",
+                              table_open(tb.rename(columns={"ToStop": "Stop", "ToTarget": "Target"}))))
+            parts.append("</div>")
 
     # ---- results
     parts.append("<h2>How trades turned out</h2><div class=\"grid\">")

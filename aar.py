@@ -36,6 +36,8 @@ Build step 3
     for scanner trades whether the stop or each target was reached.
     Options: R and entry type measured on the underlying.
   - Options: days to expiry at entry, in buckets.
+  - Open swing trades since the scan log began: where price stands vs your
+    entry and the scanner's stop and target, in % and R (closing prices).
   - Every setup episode graded on its own: triggered, stop or target first,
     highest target, 10 and 20 session returns, R. Reports by status, check
     combination, score, market filter, and taken vs passed.
@@ -168,8 +170,14 @@ def option_expiry(sym):
 
 
 def blank(v):
-    return v is None or (isinstance(v, float) and np.isnan(v)) or v is pd.NaT \
-        or (isinstance(v, str) and not v.strip())
+    if v is None or v is pd.NA or v is pd.NaT:
+        return True
+    if isinstance(v, str):
+        return not v.strip()
+    try:
+        return bool(pd.isna(v))
+    except (TypeError, ValueError):
+        return False
 
 
 def num(v):
@@ -711,6 +719,57 @@ def trade_paths(trades, book):
     return t
 
 
+OPEN_COLS = ["LastDate", "LastClose", "DaysHeld", "OpenMovePct", "OpenMFEPct", "OpenMAEPct",
+             "OpenR", "TargetR", "ToStopPct", "ToTargetPct", "OpenStopHit", "OpenHighestTarget"]
+
+
+def open_positions(trades, book):
+    """Where each open swing trade stands as of the last completed session
+    (closing prices, not the tracker; nothing here is P&L). Only trades since
+    the scan log began. Stocks are measured from your average entry price,
+    options from the underlying's close on the entry day. R uses the
+    scanner's stop when the trade matched a flag."""
+    t = trades.copy()
+    for c in OPEN_COLS:
+        t[c] = pd.NA
+    for i, tr in t.iterrows():
+        if (tr["Status"] != "Open" or tr["Style"] != "Swing" or pd.isna(tr["EntryDate"])
+                or tr.get("Source") not in ("Scanner", "Discretionary")):
+            continue
+        df = book.bars(tr["Underlying"], book.through)
+        w = window(df, tr["EntryDate"], book.through)
+        if w is None or w.empty or w.index.min() > pd.Timestamp(tr["EntryDate"]).normalize():
+            continue
+        last = float(w["close"].iloc[-1])
+        ref = float(tr["AvgEntryPrice"]) if tr["Asset"] == "Stock" and not blank(tr["AvgEntryPrice"]) \
+            else float(w["close"].iloc[0])
+        t.at[i, "LastDate"] = w.index[-1]
+        t.at[i, "LastClose"] = round(last, 2)
+        t.at[i, "DaysHeld"] = trading_days(tr["EntryDate"], w.index[-1])
+        t.at[i, "OpenMovePct"] = round((last / ref - 1) * 100, 2)
+        t.at[i, "OpenMFEPct"] = round((w["high"].max() / ref - 1) * 100, 2)
+        t.at[i, "OpenMAEPct"] = round((w["low"].min() / ref - 1) * 100, 2)
+        stop, target = tr.get("ScanStop"), tr.get("ScanTarget")
+        if not blank(stop) and ref > float(stop):
+            risk = ref - float(stop)
+            t.at[i, "OpenR"] = round((last - ref) / risk, 2)
+            t.at[i, "ToStopPct"] = round((float(stop) / last - 1) * 100, 2)
+            t.at[i, "OpenStopHit"] = bool(w["low"].min() <= float(stop))
+            if not blank(target):
+                t.at[i, "TargetR"] = round((float(target) - ref) / risk, 2)
+                t.at[i, "ToTargetPct"] = round((float(target) / last - 1) * 100, 2)
+        best, best_lvl = None, -1
+        for col, lbl in TARGET_COLS:
+            lvl = tr.get(col)
+            if not blank(lvl) and w["high"].max() >= float(lvl) and float(lvl) > best_lvl:
+                best, best_lvl = lbl, float(lvl)
+        if not blank(stop):
+            t.at[i, "OpenHighestTarget"] = best or "none yet"
+    t["LastDate"] = pd.to_datetime(t["LastDate"], errors="coerce")
+    t["DaysHeld"] = pd.to_numeric(t["DaysHeld"], errors="coerce").astype("Int64")
+    return t
+
+
 def flag_outcomes(ep, book):
     """How each setup episode played out on its own, whatever you did with it.
     Levels come from the episode's first flag. Triggered = price traded at or
@@ -947,6 +1006,7 @@ def main():
     if not args.no_prices:
         print("  Price history: checking cache, fetching only what's missing...", flush=True)
     trades = trade_paths(trades, book)
+    trades = open_positions(trades, book)
     flags_ep = flag_outcomes(flags_ep, book)
     for sym, err in book.failed.items():
         extra.append(("Price history unavailable", "", "", sym, err))
