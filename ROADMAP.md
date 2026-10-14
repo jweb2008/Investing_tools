@@ -153,6 +153,12 @@ Grades results by joining the scan log to the Excel tracker.
 - Wait for roughly 50+ trades per category before tuning weights.
 - Delivered as an Excel dashboard via Power Query or a small Python report.
 
+## thinkorswim (built)
+
+thinkorswim/: BreakoutLevels chart study, PivotDistance watchlist column,
+BreakoutTrigger scan filter for alerts, and SETUP.md. Same rules as the
+scanner, rebuilt in thinkScript.
+
 ## Later
 
 - Scoring profiles on one shared engine (one data pull, many profiles).
