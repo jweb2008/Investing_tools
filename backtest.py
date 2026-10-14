@@ -35,6 +35,7 @@ Output
 """
 import argparse
 import datetime as dt
+import os
 import sys
 import time
 from pathlib import Path
@@ -376,6 +377,7 @@ def run(years=None):
     print(f"\n{meta}\nSimulated in {time.time() - t0:.0f}s\n")
     print(s[["Trades", "Win %", "Avg R", "Profit factor", "Target hit %", "Avg hold days"]].to_string())
     print(f"\nFull breakdown: {where}   Every trade: data/{TRADES_CSV.name}")
+    return REPORT.with_name(where)
 
 
 def main():
@@ -384,10 +386,13 @@ def main():
     ap.add_argument("--download-years", type=float, default=DOWNLOAD_YEARS)
     ap.add_argument("--years", type=float, help="only test the most recent N years")
     ap.add_argument("--source", help="schwab or yahoo (overrides DATA_SOURCE)")
+    ap.add_argument("--open", action="store_true", help="open the report in Excel when done")
     args = ap.parse_args()
     if args.download:
         download(args.download_years, args.source)
-    run(args.years)
+    report = run(args.years)
+    if args.open and report and os.name == "nt":
+        os.startfile(report)
 
 
 if __name__ == "__main__":
