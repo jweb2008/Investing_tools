@@ -36,6 +36,7 @@ COLUMNS = [
     "TargetMeasured", "Target2R", "Target3R", "Resistance", "TargetATR",
     "Target", "RewardRisk", "RROk",
     "EarningsDate", "DaysToEarnings", "EarningsEstimate",
+    "RS3m", "RS6m", "RSRating", "NightsOnList",
     "OptContract", "OptExp", "OptDTE", "OptStrike", "OptMid", "OptDelta", "OptIV", "HV20",
     "OptBreakeven", "OptSpreadPct", "OptOI", "OptValEntry", "OptValTarget", "OptValStop",
     "OptRR", "OptScore", "OptTradeable", "OptGateReason", "OptPtsPayoff", "OptPtsVol",
@@ -127,6 +128,10 @@ def build_rows(results, market, min_checks, list_name, source):
             "Target": _r(r.get("target")),
             "RewardRisk": _r(r.get("reward_risk")),
             "RROk": r.get("rr_ok"),
+            "RS3m": _r(r.get("rs_3m"), 4),
+            "RS6m": _r(r.get("rs_6m"), 4),
+            "RSRating": None if r.get("rs_rating") != r.get("rs_rating") else r.get("rs_rating"),
+            "NightsOnList": r.get("nights_on_list"),
             "EarningsDate": (r.get("earn") or {}).get("date"),
             "DaysToEarnings": (r.get("earn") or {}).get("days"),
             "EarningsEstimate": (r.get("earn") or {}).get("estimate") if (r.get("earn") or {}).get("date") else None,
@@ -141,6 +146,33 @@ def build_rows(results, market, min_checks, list_name, source):
             "LoggedAt": now,
         })
     return pd.DataFrame(rows, columns=COLUMNS)
+
+
+def nights_on_list(symbols, scan_date):
+    """Consecutive prior scan nights each symbol was in a base (Setup or Near miss).
+
+    Counts back through the dates in the log before scan_date and stops at the
+    first night the symbol was not a setup or near miss. Today is not included;
+    callers add 1 when the stock is in a base today. Limited by how far back
+    the log goes.
+    """
+    log = load()
+    if log.empty:
+        return {s: 0 for s in symbols}
+    log = log[log["ScanDate"] < scan_date]
+    dates = sorted(log["ScanDate"].unique(), reverse=True)
+    inbase = log[log["Status"].isin(["Setup", "Near miss"])]
+    by_date = {d: set(g["Symbol"]) for d, g in inbase.groupby("ScanDate")}
+    out = {}
+    for s in symbols:
+        n = 0
+        for d in dates:
+            if s in by_date.get(d, ()):
+                n += 1
+            else:
+                break
+        out[s] = n
+    return out
 
 
 def load():

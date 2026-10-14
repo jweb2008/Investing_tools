@@ -102,7 +102,8 @@ def tos_symbol(s):
 # ------------------------------------------------------------------ workbook
 COLS = [  # (header, log column, kind)
     ("Symbol", "Symbol", "text"), ("Status", "Status", "text"), ("Score", "Score", "int"),
-    ("Checks", "Checks", "int"), ("Sector", "Sector", "text"),
+    ("Checks", "Checks", "int"), ("RS Rating", "RSRating", "int"), ("Nights on List", "NightsOnList", "int"),
+    ("Sector", "Sector", "text"),
     ("Close", "Close", "price"), ("Pivot", "Pivot", "price"), ("% Below Pivot", "PctBelowPivot", "pct"),
     ("Entry", "Entry", "price"), ("Stop", "Stop", "price"), ("Risk %", "RiskPct", "pct"),
     ("Target", "Target", "price"), ("Target %", "TargetPct", "pct"), ("R:R", "RewardRisk", "ratio"),
@@ -271,6 +272,11 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
         ("Target: lower of the measured move (pivot + base depth) and the nearest overhead "
          "swing high. Blank Resistance = no swing high above entry in the last year.", False),
         ("R:R in red = reward-to-risk under 2:1 to the conservative target.", False),
+        ("RS Rating (1-99): performance vs SPY over 3 and 6 months (recent quarter weighted more), "
+         "ranked across every stock scanned. 99 = stronger than 99% of them. Leaders in a choppy "
+         "market tend to break out first. Setups with the same score are sorted by RS.", False),
+        ("Nights on List: consecutive evening scans the stock has been in a base (setup or near "
+         "miss). Longer coils tend to store more energy; counts only go back to when logging began.", False),
         (f"Earnings: red = within {DANGER_DAYS} days, yellow = within {WARN_DAYS} days of the scan. "
          "An earnings gap can jump straight through a stop. Dates come from Yahoo Finance and "
          "can be estimates until the company confirms.", False),
@@ -318,7 +324,10 @@ def build_watchlist(open_it=True):
     order = {"Breakout": 0, "Setup": 1}
     rows = (day[day["Status"].isin(order)]
             .assign(_o=lambda d: d["Status"].map(order))
-            .sort_values(["_o", "Score", "PctBelowPivot"], ascending=[True, False, True]))
+            .sort_values(["_o", "Score", "RSRating", "PctBelowPivot"] if "RSRating" in day
+                         else ["_o", "Score", "PctBelowPivot"],
+                         ascending=[True, False, False, True] if "RSRating" in day
+                         else [True, False, True], na_position="last"))
     near = day[day["Status"] == "Near miss"].sort_values(["Score", "PctBelowPivot"],
                                                         ascending=[False, True])
     m = day.iloc[0] if len(day) else {}

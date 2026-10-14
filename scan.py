@@ -20,6 +20,7 @@ import pandas as pd
 import account
 import earnings
 import options
+import rs
 import levels
 import scan_log
 import scanner
@@ -68,6 +69,12 @@ def print_detail(sym, r):
     if r["breakout"]:
         print("  ** BREAKOUT: closed above pivot on 1.5x+ volume **")
     print_levels(r)
+    if r.get("rs_3m") == r.get("rs_3m") and r.get("rs_3m") is not None:
+        rating = "" if r.get("rs_rating") != r.get("rs_rating") else f", RS rating {int(r['rs_rating'])}"
+        print(f"  Rel. strength    vs SPY: {r['rs_3m'] * 100:+.1f}% over 3 months, "
+              f"{r['rs_6m'] * 100:+.1f}% over 6 months{rating}")
+    if r.get("nights_on_list"):
+        print(f"  Nights on list   {r['nights_on_list']} (consecutive scans in a base)")
     e = r.get("earn")
     if e and e.get("date"):
         warn = {"danger": "  << inside a week", "warn": "  << inside a typical swing hold"}.get(e["level"], "")
@@ -176,18 +183,20 @@ def print_options(r):
               f"breakeven {f(r['leaps_breakeven'])}")
 
 
-def market_check(src):
-    """SPY and QQQ: True if the last close is above the 50-day SMA, None if unavailable."""
-    out = {}
-    for sym in ("SPY", "QQQ"):
+def market_check(src, symbols=("SPY", "QQQ")):
+    """SPY and QQQ above their 50-day SMA (None if unavailable), plus SPY closes for RS."""
+    out, spy = {}, None
+    for sym in symbols:
         try:
             c = src.history(sym)["close"]
             out[sym] = bool(c.iloc[-1] > c.rolling(50).mean().iloc[-1]) if len(c) >= 50 else None
+            if sym == "SPY":
+                spy = c
         except DataError:
             raise
         except Exception:
             out[sym] = None
-    return out
+    return out, spy
 
 
 def describe_market(m):
@@ -228,12 +237,12 @@ def main():
     except DataError as e:
         sys.exit(f"SCAN FAILED: {e}")
 
-    market = {}
+    market, spy_close = {}, None
+    try:
+        market, spy_close = market_check(src, ("SPY", "QQQ") if len(tickers) > 1 else ("SPY",))
+    except DataError as e:
+        sys.exit(f"SCAN FAILED: {e}")
     if len(tickers) > 1:
-        try:
-            market = market_check(src)
-        except DataError as e:
-            sys.exit(f"SCAN FAILED: {e}")
         print(describe_market(market))
 
     sizing, note = account.sizing_account(src)
@@ -256,10 +265,17 @@ def main():
             continue
         r = scanner.score(df)
         r["hv20"] = options.realized_vol(df["close"])
+        r.update(rs.raw(df["close"], spy_close))
         results.append({"symbol": sym, **r, **levels.compute(df, r, sizing)})
         if len(tickers) > 20 and i % 100 == 0:
             print(f"  {i}/{len(tickers)}...")
 
+    rs.add_ratings(results)
+    if results:
+        streaks = scan_log.nights_on_list([r["symbol"] for r in results],
+                                          pd.Timestamp(results[0]["date"]).date())
+        for r in results:
+            r["nights_on_list"] = streaks.get(r["symbol"], 0) + 1 if r["required_ok"] else 0
     add_earnings(results, args.min_checks, single=len(tickers) == 1)
     if not args.no_options:
         add_options(results, src, args.min_checks, single=len(tickers) == 1)
@@ -267,12 +283,17 @@ def main():
     if len(tickers) == 1 and results:
         print_detail(tickers[0], results[0])
     elif results:
-        df = pd.DataFrame(results).sort_values(["score", "pct_below_pivot"], ascending=[False, True])
+        df = pd.DataFrame(results)
+        df["_rs"] = df["rs_rating"].fillna(df["rs_composite"].rank(pct=True) * 99)
+        df = df.sort_values(["score", "_rs", "pct_below_pivot"], ascending=[False, False, True])
+        df["RS"] = [("" if v != v else str(int(v))) for v in df["rs_rating"]]
+        df["Nights"] = df["nights_on_list"]
         df["setup"] = [scanner.is_setup(r, args.min_checks) for r in df.to_dict("records")]
         df["R:R"] = [f"{x:.1f}" + ("" if ok else " <2") for x, ok in zip(df["reward_risk"], df["rr_ok"])]
         df["Earnings"] = [earnings.label(e) for e in df["earn"]]
         shown = df if args.all else df[df["setup"]]
-        cols = {"symbol": "Symbol", "score": "Score", "checks": "Chk", "close": "Close",
+        cols = {"symbol": "Symbol", "score": "Score", "checks": "Chk", "RS": "RS", "Nights": "Nights",
+                "close": "Close",
                 "pivot": "Pivot", "pct_below_pivot": "% Below", "stop": "Stop",
                 "risk_pct": "Risk%", "target": "Target", "target_pct": "Tgt%", "R:R": "R:R",
                 "Earnings": "Earnings"}

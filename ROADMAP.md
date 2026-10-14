@@ -109,7 +109,11 @@ realized vol 25, bid/ask cost 25, open interest 15; gate at OI < 100, no bid,
 or bid/ask > 15%. Earnings before expiration is a flag only. Later: IV rank from logged IV history, covered calls
 on holdings, long-term/LEAPS profile.
 
-## Phase 6: Relative strength ranking
+## Phase 6: Relative strength ranking (built)
+
+rs.py. RS 3m/6m vs SPY, composite weighted 0.6/0.4, RS rating 1-99 across
+the universe scan. Ranks setups within a score; not part of the score.
+Also built: Nights on List (consecutive scans in a base, from the scan log).
 
 - Relative strength vs SPY over 3 to 6 months, used to sort setups.
 
