@@ -117,7 +117,13 @@ Also built: Nights on List (consecutive scans in a base, from the scan log).
 
 - Relative strength vs SPY over 3 to 6 months, used to sort setups.
 
-## Phase 6b: Backtesting
+## Phase 6b: Backtesting (built)
+
+backtest.py. --download caches ~6 years of daily bars (data/history/). Replays
+the scanner bar by bar (vectorized, verified identical to scanner.score),
+buy-stop at pivot for 5 days, levels.py stop/target, 20-day time exit.
+Report: Backtest Report.xlsx (by status, checks, score, component, RS,
+market, planned R:R, days in base, year) and data/backtest_trades.csv.
 
 - Replay the scanner over the last several years of daily bars and record
   how each flagged setup played out (target hits, stop hits, return over

@@ -76,9 +76,9 @@ class SchwabSource:
             time.sleep(wait)
         self._last_call = time.monotonic()
 
-    def history(self, symbol):
+    def history(self, symbol, days=HISTORY_DAYS):
         end = dt.datetime.now(dt.timezone.utc)
-        start = end - dt.timedelta(days=HISTORY_DAYS)
+        start = end - dt.timedelta(days=days)
         for attempt in range(3):
             self._pace()
             try:
@@ -116,12 +116,13 @@ class YahooSource:
     def __init__(self):
         import yfinance  # noqa: F401  (fail early if not installed)
 
-    def history(self, symbol):
+    def history(self, symbol, days=HISTORY_DAYS):
         import yfinance as yf
         # auto_adjust=False keeps split-adjusted but not dividend-adjusted
         # prices, which is what Schwab and thinkorswim show.
         df = yf.Ticker(symbol.replace(".", "-")).history(
-            period="2y", interval="1d", auto_adjust=False, actions=False)
+            period="2y" if days <= HISTORY_DAYS else f"{max(2, round(days / 365))}y",
+            interval="1d", auto_adjust=False, actions=False)
         if df is None or df.empty:
             return pd.DataFrame(columns=COLUMNS)
         df = df.rename(columns=str.lower)

@@ -95,6 +95,13 @@ before entry. Unmatched trades are labeled "discretionary."
 - Daily price history for underlying moves: Schwab via `data.py`
   (`get_source().history(symbol)`)
 
+## Backtest results
+
+- data/backtest_trades.csv: simulated trades from backtest.py (label as
+  backtest, never mix with live results). Columns include Score, Checks,
+  component flags, DaysInBase, RSRating, SPYAbove50, Entry, Stop, Target,
+  R, ReturnPct, MaxR, HoldDays, Exit (stop/target/time).
+
 ## Environment
 
 - Repo: github.com/jweb2008/investing_tools (see ROADMAP.md, Phase 7)
