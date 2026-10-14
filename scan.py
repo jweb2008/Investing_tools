@@ -158,6 +158,12 @@ def print_options(r):
         print(f"    Est. value     at entry {f(r['opt_val_entry'])}, at target {f(r['opt_val_target'])}, "
               f"at stop {f(r['opt_val_stop'])}  (after ~{options.HOLD_DAYS} days)")
         print(f"    Option R:R     {f(r['opt_rr'], 1)} : 1")
+        if r.get("opt_tradeable") is False:
+            print(f"    Option Score     0 / 100  NOT TRADEABLE ({r['opt_gate_reason']})")
+        elif "opt_score" in r:
+            print(f"    Option Score   {r['opt_score']:>3} / 100  (payoff {r['opt_pts_payoff']}/35, "
+                  f"vol price {r['opt_pts_vol']}/25, cost {r['opt_pts_cost']}/25, "
+                  f"liquidity {r['opt_pts_liquidity']}/15)")
         if r.get("opt_flags"):
             print(f"    Flags          {r['opt_flags']}")
         if r.get("spr_debit"):
@@ -300,9 +306,12 @@ def main():
             o = shown[shown["opt_contract"].notna()].copy() if "opt_contract" in shown else shown.iloc[0:0]
             if len(o):
                 o["opt_oi"] = o["opt_oi"].astype("Int64")
+                o["OptScore"] = [("no trade" if t is False else int(s)) if s == s else ""
+                                 for s, t in zip(o["opt_score"], o["opt_tradeable"])]
+                o = o.sort_values("opt_score", ascending=False)
             if len(o):
-                print("\nSwing calls (estimates; full detail with  py scan.py SYMBOL):")
-                ocols = {"symbol": "Symbol", "opt_contract": "Call", "opt_mid": "Mid",
+                print("\nSwing calls by Option Score (estimates; full detail with  py scan.py SYMBOL):")
+                ocols = {"symbol": "Symbol", "OptScore": "Opt Score", "opt_contract": "Call", "opt_mid": "Mid",
                          "opt_delta": "Delta", "opt_be_pct": "BE %", "opt_spread_pct": "B/A %",
                          "opt_oi": "OI", "opt_iv_hv": "IV/HV", "opt_rr": "Opt R:R", "opt_flags": "Flags"}
                 print(o[list(ocols)].rename(columns=ocols).to_string(

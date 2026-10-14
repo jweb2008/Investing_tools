@@ -25,6 +25,18 @@ LEAPS
   closest to LEAPS_DELTA (deep in the money "stock replacement").
   Extrinsic % = share of the premium that is time value (what decays).
 
+Option Score (0 to 100, swing call only)
+  Judges the contract as a vehicle for the setup; the stock score judges the
+  setup itself, so nothing here repeats a stock criterion.
+    payoff     35  option R:R            2.0+ = 35, 1.5+ = 25, 1.0+ = 12
+    vol price  25  IV / 20d realized vol 1.0x or less = 25, 1.2x = 17, 1.4x = 8
+    cost       25  bid/ask % of mid      3% or less = 25, 6% = 17, 10% = 8
+    liquidity  15  open interest         1,000+ = 15, 500+ = 10, 100+ = 5
+  Gate: open interest under 100, no bid, or bid/ask over 15% scores 0 and is
+  marked not tradeable. Theta and breakeven are already inside option R:R;
+  delta and DTE decide which contract is picked, so neither is scored.
+  Earnings before expiration is a flag only.
+
 Flags
   wide       bid/ask spread over WIDE_SPREAD_PCT of the mid
   thin       open interest under MIN_OI
@@ -43,6 +55,8 @@ LEAPS_DELTA = 0.80
 MIN_OI = 100
 WIDE_SPREAD_PCT = 10.0
 IV_HV_RICH = 1.3
+GATE_SPREAD_PCT = 15.0
+SCORE_WEIGHTS = {"payoff": 35, "vol": 25, "cost": 25, "liquidity": 15}
 HOLD_DAYS = 14          # calendar days assumed to reach the target or the stop
 RATE = 0.04             # risk-free rate for repricing (approximate)
 
@@ -67,6 +81,42 @@ def bs_call(S, K, days, iv, r=RATE):
 def realized_vol(close, days=20):
     lr = np.log(close / close.shift(1)).dropna().iloc[-days:]
     return float(lr.std() * math.sqrt(252)) if len(lr) >= days // 2 else np.nan
+
+
+# ------------------------------------------------------------ option score
+def _tier(value, steps, higher_is_better=True):
+    """steps: list of (threshold, points), best first."""
+    if value is None or value != value:
+        return 0
+    for threshold, pts in steps:
+        if (value >= threshold) if higher_is_better else (value <= threshold):
+            return pts
+    return 0
+
+
+def score_option(o):
+    """Option Score for the swing call in o (output of ideas()). Returns dict of fields."""
+    reasons = []
+    if o.get("opt_oi", 0) < MIN_OI:
+        reasons.append(f"open interest under {MIN_OI}")
+    if not o.get("opt_bid", 0) > 0:
+        reasons.append("no bid")
+    sp = o.get("opt_spread_pct")
+    if sp is None or sp != sp or sp > GATE_SPREAD_PCT:
+        reasons.append(f"bid/ask over {GATE_SPREAD_PCT:.0f}%")
+    pts = {
+        "payoff": _tier(o.get("opt_rr"), [(2.0, 35), (1.5, 25), (1.0, 12)]),
+        "vol": _tier(o.get("opt_iv_hv"), [(1.0, 25), (1.2, 17), (1.4, 8)], higher_is_better=False),
+        "cost": _tier(sp, [(3.0, 25), (6.0, 17), (10.0, 8)], higher_is_better=False),
+        "liquidity": _tier(o.get("opt_oi"), [(1000, 15), (500, 10), (100, 5)]),
+    }
+    tradeable = not reasons
+    return {
+        "opt_score": sum(pts.values()) if tradeable else 0,
+        "opt_tradeable": tradeable,
+        "opt_gate_reason": "; ".join(reasons),
+        **{f"opt_pts_{k}": v for k, v in pts.items()},
+    }
 
 
 # ------------------------------------------------------------ chain parsing
@@ -188,6 +238,7 @@ def ideas(src, symbol, r, earn_date=None):
             "opt_earn_before_exp": earn_before,
             "opt_flags": ", ".join(flags),
         })
+        out.update(score_option(out))
 
         # debit spread: short leg at the first strike at/above the stock target
         shorts = sorted((x for x in cons if x["exp"] == c["exp"] and x["strike"] > c["strike"]

@@ -113,7 +113,8 @@ COLS = [  # (header, log column, kind)
 
 OPT_COLS = [
     ("Symbol", "Symbol", "text"), ("Status", "Status", "text"), ("Close", "Close", "price"),
-    ("Target", "Target", "price"), ("Swing Call", "OptContract", "text"), ("DTE", "OptDTE", "int"),
+    ("Target", "Target", "price"), ("Option Score", "OptScoreShown", "text"),
+    ("Swing Call", "OptContract", "text"), ("DTE", "OptDTE", "int"),
     ("Mid", "OptMid", "price"), ("Delta", "OptDelta", "ratio2"), ("Breakeven", "OptBreakeven", "price"),
     ("Bid/Ask %", "OptSpreadPct", "pct"), ("Open Int.", "OptOI", "int"), ("IV", "OptIV", "frac"),
     ("20d Real. Vol", "HV20", "frac"), ("Est. @ Entry", "OptValEntry", "price"),
@@ -171,7 +172,7 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
                 cell.number_format = {"price": "#,##0.00", "pct": "0.0%", "ratio": "0.0",
                                       "ratio2": "0.00", "frac": "0%", "int": "#,##0",
                                       "date": "ddd m/d"}.get(kind, "General")
-                if kind in ("check", "int", "date"):
+                if kind in ("check", "int", "date") or key == "OptScoreShown":
                     cell.alignment = Alignment(horizontal="center")
         last = hdr + max(len(df), 1)
         ref = f"A{hdr}:{get_column_letter(len(COLS))}{last}"
@@ -199,6 +200,14 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
             ws.conditional_formatting.add(f"{rr}{hdr + 1}:{rr}{last}", FormulaRule(
                 formula=[f"AND(ISNUMBER({rr}{hdr + 1}),{rr}{hdr + 1}<2)"],
                 font=Font(color="C00000")))
+        if len(df) and "OptScoreShown" in keys:
+            sc = get_column_letter(keys.index("OptScoreShown") + 1)
+            rng = f"{sc}{hdr + 1}:{sc}{last}"
+            ws.conditional_formatting.add(rng, FormulaRule(
+                formula=[f'{sc}{hdr + 1}="no trade"'], font=Font(color="9C0006", italic=True), stopIfTrue=True))
+            ws.conditional_formatting.add(rng, FormulaRule(
+                formula=[f"AND(ISNUMBER({sc}{hdr + 1}),{sc}{hdr + 1}>=70)"],
+                fill=PatternFill("solid", start_color="C6EFCE"), font=Font(bold=True)))
         if len(df) and "OptRR" in keys:
             orr = get_column_letter(keys.index("OptRR") + 1)
             fl = get_column_letter(keys.index("OptFlags") + 1)
@@ -237,6 +246,12 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
 
     if "OptContract" in rows and rows["OptContract"].notna().any():
         opt = rows.copy()
+        if "OptScore" in opt:
+            trade = opt.get("OptTradeable")
+            opt["OptScoreShown"] = [
+                "" if s != s else ("no trade" if str(t).lower() == "false" else int(s))
+                for s, t in zip(opt["OptScore"], trade if trade is not None else [None] * len(opt))]
+            opt = opt.sort_values("OptScore", ascending=False, na_position="last")
         if {"SprMaxGain", "SprDebit"} <= set(opt.columns):
             opt["SprMaxRR"] = opt["SprMaxGain"] / opt["SprDebit"]
         sheet(wb.create_sheet("Options"), opt, f"Option Ideas for {nd}",
@@ -267,6 +282,10 @@ def write_workbook(path, rows, near, scan_date, next_day, market):
         ("Breakeven = strike + mid. Est. @ Entry / Target / Stop = Black-Scholes estimate of the call's "
          "value when the stock is at the setup's entry, target and stop, at today's implied volatility, "
          "assuming about 2 weeks pass. Opt R:R uses those estimates.", False),
+        ("Option Score (0-100, sorted high to low; green = 70+): payoff = option R:R (35), volatility "
+         "price = IV vs 20-day realized vol (25), cost = bid/ask % (25), liquidity = open interest (15). "
+         "'no trade' = open interest under 100, no bid, or bid/ask over 15%. It grades the contract, "
+         "not the setup; the stock score does that.", False),
         ("Flags: wide = bid/ask over 10% of mid; thin = open interest under 100; pricey IV = implied "
          "volatility over 1.3x the stock's 20-day realized volatility; earnings = earnings before expiration.", False),
         ("Spread: buy the swing call, sell the call at the first strike at or above the stock target. "

@@ -104,7 +104,9 @@ debit call spread (short leg at the stock target), and a LEAPS line (1 yr+,
 ~0.80 delta). Black-Scholes estimates at entry/target/stop, flags for wide
 spreads, thin open interest, rich IV vs 20-day realized vol, and earnings
 before expiration. Logged (Opt*, Spr*, Leaps* columns) and shown on the
-watchlist Options tab. Later: IV rank from logged IV history, covered calls
+watchlist Options tab. Option Score (0-100): payoff/option R:R 35, IV vs
+realized vol 25, bid/ask cost 25, open interest 15; gate at OI < 100, no bid,
+or bid/ask > 15%. Earnings before expiration is a flag only. Later: IV rank from logged IV history, covered calls
 on holdings, long-term/LEAPS profile.
 
 ## Phase 6: Relative strength ranking
