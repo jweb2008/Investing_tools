@@ -19,7 +19,7 @@ CSS = """
 :root{
   --page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;
   --grid:#e1e0d9;--axis:#c3c2b7;--ring:rgba(11,11,11,.10);
-  --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;
+  --s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;
   --good:#0ca30c;--neutral:#b9b7ae;--bad:#d03b3b;--warn:#fab219;
   --pos:#2a78d6;--neg:#e34948;--goodtext:#006300;--badtext:#b42f2f;
   color-scheme:light;
@@ -27,13 +27,13 @@ CSS = """
 @media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){
   --page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#898781;
   --grid:#2c2c2a;--axis:#383835;--ring:rgba(255,255,255,.10);
-  --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+  --s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;
   --neutral:#5c5b56;--pos:#3987e5;--neg:#e66767;--goodtext:#0ca30c;--badtext:#e66767;
   color-scheme:dark;}}
 :root[data-theme="dark"]{
   --page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;--ink2:#c3c2b7;--muted:#898781;
   --grid:#2c2c2a;--axis:#383835;--ring:rgba(255,255,255,.10);
-  --s1:#3987e5;--s2:#d95926;--s3:#199e70;
+  --s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;
   --neutral:#5c5b56;--pos:#3987e5;--neg:#e66767;--goodtext:#0ca30c;--badtext:#e66767;
   color-scheme:dark;}
 *{box-sizing:border-box}
@@ -64,7 +64,7 @@ h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink2
 svg{display:block;width:100%;height:auto;overflow:visible}
 svg text{fill:var(--muted);font-size:11px;font-family:inherit;pointer-events:none}
 svg text.lab{fill:var(--ink2)}
-svg text.val{fill:var(--ink);font-weight:600}
+svg text.val,svg tspan.val{fill:var(--ink);font-weight:600}
 .mark{transition:opacity .12s}
 .mark:hover,.mark:focus{opacity:.78;outline:none}
 .empty{color:var(--muted);border:1px dashed var(--axis);border-radius:10px;padding:26px 16px;
@@ -107,7 +107,8 @@ HATCH_DEF = ('<defs><pattern id="hatch" width="6" height="6" patternUnits="userS
              'patternTransform="rotate(45)"><rect width="6" height="6" style="fill:var(--surface)"/>'
              '<line x1="0" y1="0" x2="0" y2="6" style="stroke:var(--neutral);stroke-width:2.5"/>'
              '</pattern></defs>')
-STYLE_COLORS = {"Swing": "var(--s1)", "Hedge": "var(--s2)", "Other": "var(--s3)"}
+STYLE_COLORS = {"Swing": "var(--s1)", "Hedge": "var(--s2)", "Day": "var(--s3)", "Long term": "var(--s4)",
+                "Other": "var(--muted)"}
 DTE_COLORS = {"0-14 days": "var(--s2)", "15-45 days": "var(--s1)", "46+ days": "var(--s3)"}
 
 W = 640  # SVG coordinate width; scales to the card
@@ -331,7 +332,7 @@ def line_chart(series, h=250):
     d0, d1 = min(alld), max(alld)
     ticks = nice_ticks(min(allv), max(allv), 4)
     lo, hi = ticks[0], ticks[-1]
-    top, bot, left, right = 14, h - 26, 58, W - 92
+    top, bot, left, right = 14, h - 26, 58, W - 150
     span = max((d1 - d0).days, 1)
     xs = lambda d: left + (d - d0).days / span * (right - left)
     ys = lambda v: bot - (v - lo) / (hi - lo) * (bot - top)
@@ -358,13 +359,17 @@ def line_chart(series, h=250):
         d, v = pts[-1]
         out.append(f'<circle cx="{xs(d):.1f}" cy="{ys(v):.1f}" r="4.5" '
                    f'style="fill:{color};stroke:var(--surface);stroke-width:2"/>')
-        ends.append([ys(v), name, v])
+        ends.append([ys(v), name, v, ys(v), xs(d)])
     ends.sort()
     for k in range(1, len(ends)):       # keep end labels from overlapping
-        if ends[k][0] - ends[k - 1][0] < 14:
-            ends[k][0] = ends[k - 1][0] + 14
-    for y, name, v in ends:
-        out.append(f'<text class="val" x="{right + 10}" y="{y + 4:.1f}">{esc(money(v))}</text>')
+        if ends[k][0] - ends[k - 1][0] < 15:
+            ends[k][0] = ends[k - 1][0] + 15
+    for y, name, v, y0, x0 in ends:
+        if abs(y - y0) > 3:             # nudged: thin leader back to the line end
+            out.append(f'<line x1="{x0 + 6:.1f}" x2="{right + 8:.1f}" y1="{y0:.1f}" y2="{y:.1f}" '
+                       f'style="stroke:var(--axis)"/>')
+        out.append(f'<text class="lab" x="{right + 10}" y="{y + 4:.1f}">{esc(name)} '
+                   f'<tspan class="val">{esc(money(v))}</tspan></text>')
     out.append("</svg>")
     return "".join(out)
 
@@ -538,10 +543,11 @@ def build(decisions, trades, flags, review, info, out_path):
                       legend(OUTCOME_COLORS) + stacked_100(rows, OUTCOME_COLORS), table(tbl)))
 
     # equity curve by style
-    closed["Bucket"] = closed["Style"].where(closed["Style"].isin(["Swing", "Hedge"]), "Other")
+    closed["Bucket"] = closed["Style"].where(closed["Style"].isin(["Swing", "Hedge", "Day", "Long term"]),
+                                             "Other")
     closed["ExitDate"] = pd.to_datetime(closed["ExitDate"])
     series = []
-    for name in ("Swing", "Hedge", "Other"):
+    for name in ("Swing", "Hedge", "Day", "Long term", "Other"):
         g = closed[closed["Bucket"] == name].groupby("ExitDate")["NetProfit"].sum().sort_index().cumsum()
         if len(g):
             series.append((name, STYLE_COLORS[name], list(zip(g.index, g.values))))
@@ -549,7 +555,7 @@ def build(decisions, trades, flags, review, info, out_path):
         tb = (closed.groupby([closed["ExitDate"].dt.to_period("M").astype(str), "Bucket"])["NetProfit"]
               .sum().unstack(fill_value=0).round(0).reset_index().rename(columns={"ExitDate": "Month"}))
         parts.append(card("Cumulative net profit by style",
-                          "Running total of recorded Net Profit by exit date. Other = Day and Long term.",
+                          "Running total of recorded Net Profit by exit date, one line per style.",
                           legend([(n, c) for n, c, _ in series], line=True) + line_chart(series), table(tb)))
     parts.append("</div>")
 
