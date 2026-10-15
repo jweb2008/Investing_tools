@@ -76,17 +76,19 @@ REFRESH_DAYS = 7
 
 
 # ------------------------------------------------------------------ data
-def load_symbols():
-    if not UNIVERSE.exists():
-        sys.exit("No universe yet. Run: py build_universe.py")
-    syms = [l.split("#")[0].strip().upper() for l in UNIVERSE.read_text().splitlines()]
+def load_symbols(path=None):
+    path = path or UNIVERSE
+    if not path.exists():
+        sys.exit(f"No universe yet ({path.name}). Run: py build_universe.py"
+                 + (" and py build_momentum_universe.py" if path != UNIVERSE else ""))
+    syms = [l.split("#")[0].strip().upper() for l in path.read_text().splitlines()]
     return [s for s in syms if s]
 
 
-def download(years=DOWNLOAD_YEARS, source=None):
+def download(years=DOWNLOAD_YEARS, source=None, symbols=None):
     src = get_source(source)
     HIST_DIR.mkdir(parents=True, exist_ok=True)
-    syms = ["SPY", "QQQ"] + load_symbols()
+    syms = ["SPY", "QQQ"] + (symbols if symbols is not None else load_symbols())
     days = int(years * 365.25) + 10
     todo = [s for s in syms if not _fresh(s)]
     print(f"Downloading {years} years of daily bars for {len(todo)} symbols "

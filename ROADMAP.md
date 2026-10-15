@@ -165,6 +165,17 @@ thinkorswim/: BreakoutLevels chart study, PivotDistance watchlist column,
 BreakoutTrigger scan filter for alerts, and SETUP.md. Same rules as the
 scanner, rebuilt in thinkScript.
 
+## Profiles: growth and momentum (research stage)
+
+Two watchlists from one engine, as tabs in one workbook. Growth = current
+base-breakout scan on the index universe (weeks to months). Momentum = faster,
+more volatile moves on a broad universe (all US-listed common stocks, $5+,
+$20M+/day; build_momentum_universe.py). signals.py holds demand features
+(up/down volume, pocket pivots, RS line highs) and momentum features.
+strategy_test.py: pre-declared strategies (growth_current, growth_demand,
+mom_breakout, mom_pullback), two exits each, chosen on 2021-2024 and scored
+once on 2025+ holdout. Only strategies that pass both go live.
+
 ## Later
 
 - Scoring profiles on one shared engine (one data pull, many profiles).
