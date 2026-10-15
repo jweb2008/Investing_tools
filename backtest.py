@@ -7,6 +7,7 @@ works, without waiting months for the live scan log.
                                 ~10 to 15 minutes; refreshes files older than 7 days)
   py backtest.py                run the backtest on the cached history (a minute or two)
   py backtest.py --years 3      only test the most recent 3 years
+  py backtest.py --compare      compare exit rules (current target, 3R, trailing) side by side
 
 How a trade is simulated (same rules as the live scanner and levels.py)
   Signal   any day a stock is in a base: uptrend (close > 50 > 200 SMA) and
@@ -56,7 +57,21 @@ REPORT = HERE / "Backtest Report.xlsx"
 
 DOWNLOAD_YEARS = 6
 ENTRY_WINDOW = 5      # trading days the buy-stop stays active
-MAX_HOLD = 20         # trading days before a time exit
+MAX_HOLD = 20         # trading days before a time exit (current rules)
+
+# Exit rules compared by  py backtest.py --compare
+#   target    the live rules: conservative target (measured move capped by
+#             resistance), 20-day time exit
+#   3R        fixed target at 3x the risk, 30-day time exit
+#   trail10   no target: once the trade reaches +1R the stop moves to
+#             breakeven, then exit on a close below the 10-day SMA; 40-day limit
+#   trail20   same with the 20-day SMA (gives trades more room); 60-day limit
+EXIT_MODES = {
+    "target": {"target": "levels", "max_hold": 20},
+    "3R": {"target": 3.0, "max_hold": 30},
+    "trail10": {"target": None, "trail_sma": 10, "max_hold": 40},
+    "trail20": {"target": None, "trail_sma": 20, "max_hold": 60},
+}
 REFRESH_DAYS = 7
 
 
@@ -150,10 +165,12 @@ def indicator_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------ simulation
-def simulate(sym, df, ind, start_date):
-    """Walk one stock day by day. Returns a list of trade dicts."""
+def simulate(sym, df, ind, start_date, mode="target"):
+    """Walk one stock day by day under one exit rule. Returns a list of trade dicts."""
+    cfg = EXIT_MODES[mode]
     trades = []
     o, h, l, c = (df[k].to_numpy() for k in ("open", "high", "low", "close"))
+    trail = df["close"].rolling(cfg["trail_sma"]).mean().to_numpy() if cfg.get("trail_sma") else None
     dates = df.index
     req = ind["required_ok"].to_numpy()
     n = len(df)
@@ -181,16 +198,23 @@ def simulate(sym, df, ind, start_date):
         r = {"close": row["close"], "pivot": row["pivot"], "base_low": row["base_low"],
              "atr14": row["atr14"], "breakout": False}
         lv = levels.compute(df.iloc[: i + 1], r)
-        stop, target = lv["stop"], lv["target"]
+        stop = lv["stop"]
         risk = fill - stop
         if risk <= 0:
             i = fill_i + 1
             continue
+        if cfg["target"] == "levels":
+            target = lv["target"]
+        elif cfg["target"]:
+            target = fill + cfg["target"] * risk
+        else:
+            target = np.inf
+        max_hold = cfg["max_hold"]
 
         exit_i, exit_px, how = None, None, None
-        best = fill
-        for k in range(fill_i, min(fill_i + MAX_HOLD, n)):
-            lo_ok = l[k] <= stop
+        best, active, cur_stop = fill, False, stop
+        for k in range(fill_i, min(fill_i + max_hold, n)):
+            lo_ok = l[k] <= cur_stop
             hi_ok = h[k] >= target
             if k == fill_i:
                 # entry day: the order of the high and low is unknown. Count the stop
@@ -199,13 +223,20 @@ def simulate(sym, df, ind, start_date):
                 hi_ok = hi_ok and c[k] >= target and not lo_ok
             best = max(best, h[k])
             if lo_ok:
-                exit_i, exit_px, how = k, min(o[k], stop) if k > fill_i else stop, "stop"
+                exit_i, exit_px = k, min(o[k], cur_stop) if k > fill_i else cur_stop
+                how = "stop" if cur_stop < fill else "breakeven"
                 break
             if hi_ok:
                 exit_i, exit_px, how = k, max(o[k], target) if k > fill_i else target, "target"
                 break
+            if trail is not None:
+                if active and c[k] < trail[k]:
+                    exit_i, exit_px, how = k, c[k], "trail"
+                    break
+                if not active and h[k] >= fill + risk:
+                    active, cur_stop = True, max(cur_stop, fill)   # breakeven from tomorrow
         if exit_i is None:
-            exit_i = min(fill_i + MAX_HOLD - 1, n - 1)
+            exit_i = min(fill_i + max_hold - 1, n - 1)
             exit_px, how = c[exit_i], "time" if exit_i < n - 1 else "open"
 
         trades.append({
@@ -216,7 +247,9 @@ def simulate(sym, df, ind, start_date):
             "BBSqueeze": bool(row["bb_squeeze"]), "ATRContract": bool(row["atr_contract"]),
             "VolDryup": bool(row["vol_dryup"]), "PctBelowPivot": round(row["pct_below_pivot"], 2),
             "DaysInBase": int(in_base[i]),
-            "Entry": round(fill, 2), "Stop": round(stop, 2), "Target": round(target, 2),
+            "ExitRule": mode,
+            "Entry": round(fill, 2), "Stop": round(stop, 2),
+            "Target": round(target, 2) if np.isfinite(target) else None,
             "PlannedRR": round(lv["reward_risk"], 2) if lv["reward_risk"] == lv["reward_risk"] else None,
             "RROk": bool(lv["rr_ok"]),
             "ExitPrice": round(exit_px, 2),
@@ -321,7 +354,8 @@ def write_report(sheets, path, meta):
         xw.sheets["How to Read"].column_dimensions["A"].width = 130
 
 
-def run(years=None):
+def prepare(years=None):
+    """Load cached history, compute indicators and RS ratings once."""
     syms = load_symbols()
     spy = load_history("SPY")
     if spy is None:
@@ -348,36 +382,155 @@ def run(years=None):
     if not frames:
         sys.exit("No usable history found. Run: py backtest.py --download")
     rating = (pd.DataFrame(comp).rank(axis=1, pct=True) * 98 + 1).round()
+    return {"frames": frames, "rating": rating, "spy_up": spy_up, "start": start, "last": last}
 
-    print(f"Simulating trades from {start.date()} to {last.date()}...")
-    t0, trades = time.time(), []
-    for s, (df, ind) in frames.items():
-        trades += simulate(s, df, ind, start)
+
+def simulate_all(ctx, mode):
+    trades = []
+    for s, (df, ind) in ctx["frames"].items():
+        trades += simulate(s, df, ind, ctx["start"], mode)
     if not trades:
         sys.exit("No trades were generated. Check the cached history.")
     t = pd.DataFrame(trades)
     sd = pd.to_datetime(t["SignalDate"])
-    t["SPYAbove50"] = spy_up.reindex(sd).fillna(False).astype(bool).to_numpy()
+    t["SPYAbove50"] = ctx["spy_up"].reindex(sd).fillna(False).astype(bool).to_numpy()
+    rating = ctx["rating"]
     t["RSRating"] = [rating.at[d, s] if d in rating.index and s in rating.columns else np.nan
                      for d, s in zip(sd, t["Symbol"])]
+    return t
+
+
+def _save_report(writer, sheets, path, meta):
+    try:
+        writer(sheets, path, meta)
+        return path
+    except PermissionError:
+        alt = path.with_name(f"{path.stem} ({dt.datetime.now():%H%M}).xlsx")
+        writer(sheets, alt, meta)
+        return alt
+
+
+def run(years=None):
+    ctx = prepare(years)
+    print(f"Simulating trades from {ctx['start'].date()} to {ctx['last'].date()}...")
+    t0 = time.time()
+    t = simulate_all(ctx, "target")
     TRADES_CSV.parent.mkdir(exist_ok=True)
     t.to_csv(TRADES_CSV, index=False)
-
-    meta = (f"{len(frames)} stocks, signals {start.date()} to {last.date()}, {len(t)} simulated trades. "
-            f"Today's index members only (survivorship bias). Generated {dt.date.today()}.")
+    meta = (f"{len(ctx['frames'])} stocks, signals {ctx['start'].date()} to {ctx['last'].date()}, "
+            f"{len(t)} simulated trades. Today's index members only (survivorship bias). "
+            f"Generated {dt.date.today()}.")
     sheets = build_report(t)
-    try:
-        write_report(sheets, REPORT, meta)
-        where = REPORT.name
-    except PermissionError:
-        alt = REPORT.with_name(f"Backtest Report ({dt.datetime.now():%H%M}).xlsx")
-        write_report(sheets, alt, meta)
-        where = alt.name
+    where = _save_report(write_report, sheets, REPORT, meta)
     s = sheets["Summary"].round(2)
     print(f"\n{meta}\nSimulated in {time.time() - t0:.0f}s\n")
     print(s[["Trades", "Win %", "Avg R", "Profit factor", "Target hit %", "Avg hold days"]].to_string())
-    print(f"\nFull breakdown: {where}   Every trade: data/{TRADES_CSV.name}")
-    return REPORT.with_name(where)
+    print(f"\nFull breakdown: {where.name}   Every trade: data/{TRADES_CSV.name}")
+    return where
+
+
+# ------------------------------------------------------------ exit comparison
+COMPARE_REPORT = HERE / "Backtest Exit Comparison.xlsx"
+COMPARE_CSV = HERE / "data" / "backtest_exit_trades.csv"
+RS_TOP = 60          # RS rating cutoff for the "top 40%" filter
+
+
+def _metrics(g, years):
+    r = g["R"].sort_index()
+    pos, neg = r[r > 0].sum(), -r[r < 0].sum()
+    # max drawdown of cumulative R, trades taken in exit-date order
+    cum = g.sort_values("ExitDate")["R"].cumsum()
+    dd = (cum - cum.cummax()).min() if len(cum) else np.nan
+    return pd.Series({
+        "Trades": len(g),
+        "Trades / yr": len(g) / years if years else np.nan,
+        "Win %": (r > 0).mean() * 100,
+        "Avg R": r.mean(),
+        "Median R": r.median(),
+        "Profit factor": pos / neg if neg > 0 else np.nan,
+        "Avg win R": r[r > 0].mean(),
+        "Avg loss R": r[r < 0].mean(),
+        "Trades 3R+ %": (r >= 3).mean() * 100,
+        "Total R / yr": r.sum() / years if years else np.nan,
+        "Max drawdown R": dd,
+        "Avg hold days": g["HoldDays"].mean(),
+    })
+
+
+FILTERS = {
+    "All setups": lambda t: t,
+    "RS top 40%": lambda t: t[t["RSRating"] >= RS_TOP],
+    "RS top 40% + SPY up": lambda t: t[(t["RSRating"] >= RS_TOP) & t["SPYAbove50"]],
+}
+
+
+def compare(years=None):
+    ctx = prepare(years)
+    span = (ctx["last"] - ctx["start"]).days / 365.25
+    print(f"Comparing exit rules on signals {ctx['start'].date()} to {ctx['last'].date()}...")
+    allt, rows, yearly = [], {}, {}
+    for mode in EXIT_MODES:
+        t0 = time.time()
+        t = simulate_all(ctx, mode)
+        t = t[t["Status"] == "Setup"]
+        allt.append(t)
+        for fname, f in FILTERS.items():
+            rows[(mode, fname)] = _metrics(f(t), span)
+        ft = FILTERS["RS top 40%"](t)
+        yearly[mode] = ft.groupby(pd.to_datetime(ft["EntryDate"]).dt.year)["R"].mean()
+        print(f"  {mode:<8} {len(t):>6} setup trades  ({time.time() - t0:.0f}s)")
+    table = pd.DataFrame(rows).T
+    table.index.names = ["Exit rule", "Filter"]
+    by_year = pd.DataFrame(yearly)
+    by_year.index.name = "Year (RS top 40%, avg R)"
+    pd.concat(allt).to_csv(COMPARE_CSV, index=False)
+
+    meta = (f"Setups only, signals {ctx['start'].date()} to {ctx['last'].date()}, "
+            f"{len(ctx['frames'])} stocks. Today's index members only (survivorship bias).")
+    where = _save_report(write_compare, {"Comparison": table, "By year": by_year}, COMPARE_REPORT, meta)
+    show = table[["Trades / yr", "Win %", "Avg R", "Profit factor", "Total R / yr",
+                  "Max drawdown R", "Avg hold days"]].round(2)
+    pd.set_option("display.width", 200)
+    print(f"\n{meta}\n")
+    print(show.to_string())
+    print(f"\nAvg R by year (RS top 40%):\n{by_year.round(2).to_string()}")
+    print(f"\nSaved: {where.name}   Every trade: data/{COMPARE_CSV.name}")
+    return where
+
+
+def write_compare(sheets, path, meta):
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    with pd.ExcelWriter(path, engine="openpyxl") as xw:
+        for name, df in sheets.items():
+            df.round(2).to_excel(xw, sheet_name=name, startrow=3)
+            ws = xw.sheets[name]
+            ws["A1"] = f"Backtest exit comparison: {name}"
+            ws["A1"].font = Font(name="Arial", size=14, bold=True)
+            ws["A2"] = meta
+            ws["A2"].font = Font(name="Arial", size=9, italic=True, color="555555")
+            for row in ws.iter_rows(min_row=4):
+                for cell in row:
+                    cell.font = Font(name="Arial", size=10, bold=cell.row == 4,
+                                     color="FFFFFF" if cell.row == 4 else "000000")
+                    if cell.row == 4:
+                        cell.fill = PatternFill("solid", start_color="1F4E78")
+                        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            for c in range(1, df.shape[1] + 3):
+                ws.column_dimensions[get_column_letter(c)].width = 14
+            ws.column_dimensions["B"].width = 22
+            ws.row_dimensions[4].height = 30
+        notes = pd.DataFrame({"Exit rules": [
+            "target: live rules. Conservative target (measured move capped by the nearest swing high), 20-day time exit.",
+            "3R: fixed target at 3x the planned risk, 30-day time exit.",
+            "trail10: no target. After +1R the stop moves to breakeven, then exit on a close below the 10-day SMA. 40-day limit.",
+            "trail20: same with the 20-day SMA, which gives trades more room. 60-day limit.",
+            "All rules: buy-stop at the pivot for 5 days, initial stop = tighter of base low and 2x ATR (min 1 ATR), one trade per stock at a time.",
+            "Avg R and Total R / yr are the headline numbers. Max drawdown R is the worst peak-to-trough run of cumulative R.",
+            "Survivorship bias flatters every rule equally, so compare rules against each other rather than trusting the absolute numbers.",
+        ]})
+        notes.to_excel(xw, sheet_name="How to Read", index=False)
+        xw.sheets["How to Read"].column_dimensions["A"].width = 130
 
 
 def main():
@@ -387,10 +540,11 @@ def main():
     ap.add_argument("--years", type=float, help="only test the most recent N years")
     ap.add_argument("--source", help="schwab or yahoo (overrides DATA_SOURCE)")
     ap.add_argument("--open", action="store_true", help="open the report in Excel when done")
+    ap.add_argument("--compare", action="store_true", help="compare exit rules side by side")
     args = ap.parse_args()
     if args.download:
         download(args.download_years, args.source)
-    report = run(args.years)
+    report = compare(args.years) if args.compare else run(args.years)
     if args.open and report and os.name == "nt":
         os.startfile(report)
 
