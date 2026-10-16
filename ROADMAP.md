@@ -176,6 +176,14 @@ strategy_test.py: pre-declared strategies (growth_current, growth_demand,
 mom_breakout, mom_pullback), two exits each, chosen on 2021-2024 and scored
 once on 2025+ holdout. Only strategies that pass both go live.
 
+Result (2026-10-15): all four failed development. Dev Avg R / PF:
+growth_current -0.05 / 0.92, growth_demand -0.05 / 0.92, mom_breakout
+-0.06 / 0.89, mom_pullback -0.01 / 0.97 (holdout similar). Decision: no
+momentum tab and no rule changes from this test. The scanner stays a
+shortlist for chart review; whether it adds value is judged on live trades
+in the AAR (taken vs passed, scanner vs discretionary), not by re-tuning
+rules against the same history.
+
 ## Later
 
 - Scoring profiles on one shared engine (one data pull, many profiles).
