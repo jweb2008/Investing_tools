@@ -71,6 +71,8 @@ import re
 import shutil
 import sys
 import tempfile
+import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +80,8 @@ import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
+warnings.filterwarnings("ignore", message="Unknown extension is not supported")  # openpyxl, harmless
+warnings.filterwarnings("ignore", message=".*httpx.*deprecated")                # authlib, harmless
 
 HERE = Path(__file__).parent
 TRACKER_DIR = Path(os.getenv("TRACKER_DIR", str(HERE)))
@@ -597,6 +601,7 @@ class PriceBook:
         self._mem = {}
         self.fetched, self.failed, self.stopped = [], {}, None
         self.through = last_completed_session(now)
+        self._t0 = time.monotonic()
 
     def source(self):
         if self._source is None:
@@ -643,6 +648,10 @@ class PriceBook:
         merged.to_csv(self._path(sym))
         self._mem[sym] = merged
         self.fetched.append(sym)
+        n = len(self.fetched)
+        if n == 1 or n % 10 == 0:
+            secs = time.monotonic() - self._t0
+            print(f"    {n} symbols fetched ({secs:.0f}s, latest {sym})", flush=True)
         return merged
 
 
@@ -977,13 +986,36 @@ def scan_log_info():
             f"({', '.join(f'{v} {k}' for k, v in s['Status'].value_counts().items())})")
 
 
+class Tee:
+    """Writes to the console and appends to a log file, so a run shows its
+    progress on screen and still leaves a record."""
+
+    def __init__(self, stream, path):
+        self.stream, self.f = stream, open(path, "a", encoding="utf-8")
+
+    def write(self, s):
+        self.stream.write(s)
+        self.f.write(s)
+        return len(s)
+
+    def flush(self):
+        self.stream.flush()
+        self.f.flush()
+
+
 def main():
     ap = argparse.ArgumentParser(description="After Action Review: grade trades from the tracker")
     ap.add_argument("--tracker", help="tracker file (default: newest in TRACKER_DIR)")
     ap.add_argument("--no-prices", action="store_true",
                     help="skip price history (no Schwab calls; uses cached bars only)")
     ap.add_argument("--source", help="price source: schwab or yahoo (default: DATA_SOURCE)")
+    ap.add_argument("--log", help="also append everything printed to this file (run_aar.bat uses aar_log.txt)")
     args = ap.parse_args()
+    if args.log:
+        sys.stdout = Tee(sys.stdout, HERE / args.log)
+        sys.stderr = Tee(sys.stderr, HERE / args.log)
+        print(f"==== {dt.datetime.now():%a %m/%d/%Y %H:%M}")
+    started = time.monotonic()
 
     path = Path(args.tracker) if args.tracker else find_latest_tracker()
     if not path.is_absolute():
@@ -1004,7 +1036,8 @@ def main():
     book = PriceBook(source=source, enabled=not args.no_prices)
     print(f"After Action Review  ({name})")
     if not args.no_prices:
-        print("  Price history: checking cache, fetching only what's missing...", flush=True)
+        print("  Price history: checking cache, fetching only what's missing "
+              "(a few minutes when many setups are new)...", flush=True)
     trades = trade_paths(trades, book)
     trades = open_positions(trades, book)
     flags_ep = flag_outcomes(flags_ep, book)
@@ -1067,6 +1100,7 @@ def main():
     print(f"  -> {OUTPUT}")
     if REPORT.exists():
         print(f"  -> {REPORT}  (open in your browser)")
+    print(f"  Done in {time.monotonic() - started:.0f}s.")
 
 
 if __name__ == "__main__":
